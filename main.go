@@ -1,13 +1,15 @@
 // Command meshery-mcp-poc is a minimal read-only MCP server for Meshery.
 //
-// It speaks the Model Context Protocol over stdio and exposes two read-only
-// tools and one read-only resource against a local Meshery Server. No mutating
-// endpoints are registered and Secrets are never surfaced.
+// It speaks the Model Context Protocol over stdio (default) or Streamable HTTP
+// and exposes read-only tools and a resource against a local Meshery Server. No
+// mutating endpoints are registered and Secrets are never surfaced.
 package main
 
 import (
 	"context"
+	"flag"
 	"log"
+	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/singhharsh1708/meshery-mcp-poc/meshery"
@@ -66,12 +68,34 @@ type ListConnOutput struct {
 }
 
 func main() {
+	transport := flag.String("transport", "stdio", "transport to serve: stdio or http")
+	addr := flag.String("addr", ":8080", "listen address for the http (streamable) transport")
+	flag.Parse()
+
 	c, err := meshery.NewFromEnv()
 	if err != nil {
 		log.Fatalf("meshery client: %v", err)
 	}
-	if err := newServer(c).Run(context.Background(), &mcp.StdioTransport{}); err != nil {
-		log.Fatalf("server: %v", err)
+
+	switch *transport {
+	case "stdio":
+		if err := newServer(c).Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+			log.Fatalf("server: %v", err)
+		}
+	case "http":
+		// Streamable HTTP (spec 2025-03-26), the transport that superseded the
+		// old HTTP+SSE one. A fresh server is built per session, and Origin is
+		// validated to guard against DNS-rebinding.
+		handler := mcp.NewStreamableHTTPHandler(
+			func(*http.Request) *mcp.Server { return newServer(c) },
+			&mcp.StreamableHTTPOptions{CrossOriginProtection: http.NewCrossOriginProtection()},
+		)
+		log.Printf("meshery-mcp-poc listening on %s (streamable http)", *addr)
+		if err := http.ListenAndServe(*addr, handler); err != nil {
+			log.Fatalf("server: %v", err)
+		}
+	default:
+		log.Fatalf("unknown transport %q (want stdio or http)", *transport)
 	}
 }
 

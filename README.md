@@ -2,7 +2,7 @@
 
 A small, read-only [Model Context Protocol](https://modelcontextprotocol.io) server for [Meshery](https://meshery.io), built as a proof-of-concept for the LFX Term 3 2026 "Meshery MCP Server" project ([cncf/mentoring#2019](https://github.com/cncf/mentoring/issues/2019)).
 
-It speaks MCP over stdio and lets an AI client (Claude Desktop, MCP Inspector, …) read from a local Meshery Server. It exposes:
+It speaks MCP over **stdio** (default) or **Streamable HTTP** and lets an AI client (Claude Desktop, MCP Inspector, …) read from a local Meshery Server. It exposes:
 
 - **`meshery_list_designs`** — lists Meshery designs via `GET /api/pattern`
 - **`meshery_list_kubernetes_resources`** — lists MeshSync-discovered Kubernetes resources via `GET /api/system/meshsync/resources`
@@ -18,6 +18,18 @@ go build -o meshery-mcp-poc .
 ```
 
 Requires Go 1.25+. Depends only on `github.com/modelcontextprotocol/go-sdk` v1.7.0.
+
+## Transports
+
+```bash
+# stdio (default) — for local AI clients like Claude Desktop
+./meshery-mcp-poc
+
+# Streamable HTTP (spec 2025-03-26, the transport that superseded HTTP+SSE)
+./meshery-mcp-poc -transport http -addr :8080
+```
+
+The HTTP mode builds a fresh server per session and validates the `Origin` header (via `http.CrossOriginProtection`) to guard against DNS-rebinding.
 
 ## Point it at a local Meshery
 
