@@ -6,6 +6,7 @@ It speaks MCP over stdio and lets an AI client (Claude Desktop, MCP Inspector, �
 
 - **`meshery_list_designs`** — lists Meshery designs via `GET /api/pattern`
 - **`meshery_list_kubernetes_resources`** — lists MeshSync-discovered Kubernetes resources via `GET /api/system/meshsync/resources`
+- **`meshery_list_kubernetes_connections`** — lists the Kubernetes cluster connections Meshery is managing via `GET /api/integrations/connections?kind=kubernetes`
 - **`meshery://meshsync/summary`** (resource) — the MeshSync resource summary via `GET /api/system/meshsync/resources/summary`
 
 No mutating endpoints are registered. Secrets are never surfaced, and `spec`/`status`/`labels`/`annotations` are never requested from MeshSync, so Secret data and last-applied-config never reach the model.

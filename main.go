@@ -48,6 +48,23 @@ type ListK8sOutput struct {
 	Resources  []K8sSummary `json:"resources"`
 }
 
+type ListConnInput struct {
+	Page     int `json:"page,omitempty" jsonschema:"zero-based page index"`
+	PageSize int `json:"pageSize,omitempty" jsonschema:"results per page (default 25)"`
+}
+
+type ConnectionSummary struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Status string `json:"status"`
+}
+
+type ListConnOutput struct {
+	TotalCount  int                 `json:"totalCount"`
+	Connections []ConnectionSummary `json:"connections"`
+}
+
 func main() {
 	c, err := meshery.NewFromEnv()
 	if err != nil {
@@ -97,6 +114,22 @@ func newServer(c *meshery.Client) *mcp.Server {
 				Name:       k.Metadata.Name,
 				Namespace:  k.Metadata.Namespace,
 			})
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "meshery_list_kubernetes_connections",
+		Description: "List the Kubernetes cluster connections Meshery is managing via GET /api/integrations/connections?kind=kubernetes. Read-only.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in ListConnInput) (*mcp.CallToolResult, ListConnOutput, error) {
+		r, err := c.ListKubernetesConnections(ctx, in.Page, in.PageSize)
+		if err != nil {
+			return nil, ListConnOutput{}, err
+		}
+		out := ListConnOutput{TotalCount: r.TotalCount}
+		for _, cn := range r.Connections {
+			out.Connections = append(out.Connections, ConnectionSummary{ID: cn.ID, Name: cn.Name, Kind: cn.Kind, Status: cn.Status})
 		}
 		return nil, out, nil
 	})

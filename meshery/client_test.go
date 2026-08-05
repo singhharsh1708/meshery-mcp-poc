@@ -94,3 +94,29 @@ func TestGetErrorsOnNon200(t *testing.T) {
 		t.Fatal("expected an error on 401, got nil")
 	}
 }
+
+func TestListKubernetesConnectionsFiltersByKind(t *testing.T) {
+	var gotPath, rawQuery, gotCookies string
+	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, rawQuery, gotCookies = r.URL.Path, r.URL.RawQuery, r.Header.Get("Cookie")
+		_, _ = w.Write([]byte(`{"page":0,"pageSize":25,"totalCount":1,"connections":[{"id":"c1","name":"minikube","kind":"kubernetes","status":"connected"}]}`))
+	}))
+	defer srv.Close()
+
+	out, err := c.ListKubernetesConnections(context.Background(), 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TotalCount != 1 || len(out.Connections) != 1 || out.Connections[0].Name != "minikube" {
+		t.Fatalf("bad parse: %+v", out)
+	}
+	if gotPath != "/api/integrations/connections" {
+		t.Errorf("path = %s, want /api/integrations/connections", gotPath)
+	}
+	if !strings.Contains(rawQuery, "kind=kubernetes") {
+		t.Errorf("kind=kubernetes not sent: %s", rawQuery)
+	}
+	if !strings.Contains(gotCookies, "token=tok") || !strings.Contains(gotCookies, "meshery-provider=prov") {
+		t.Errorf("auth cookies not sent: %q", gotCookies)
+	}
+}

@@ -166,3 +166,33 @@ func (c *Client) GetMeshSyncSummary(ctx context.Context) (json.RawMessage, error
 	var raw json.RawMessage
 	return raw, c.get(ctx, "/api/system/meshsync/resources/summary", nil, &raw)
 }
+
+// Connection is a Meshery connection (subset of GET /api/integrations/connections).
+type Connection struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Status string `json:"status"`
+}
+
+// ConnectionsResponse wraps GET /api/integrations/connections. camelCase tags.
+type ConnectionsResponse struct {
+	Page        int          `json:"page"`
+	PageSize    int          `json:"pageSize"`
+	TotalCount  int          `json:"totalCount"`
+	Connections []Connection `json:"connections"`
+}
+
+// ListKubernetesConnections lists the Kubernetes cluster connections Meshery is
+// managing via GET /api/integrations/connections?kind=kubernetes. Read-only.
+func (c *Client) ListKubernetesConnections(ctx context.Context, page, pageSize int) (*ConnectionsResponse, error) {
+	if pageSize == 0 {
+		pageSize = 25
+	}
+	q := url.Values{}
+	q.Set("page", strconv.Itoa(page))
+	q.Set("pagesize", strconv.Itoa(pageSize))
+	q.Add("kind", "kubernetes")
+	var out ConnectionsResponse
+	return &out, c.get(ctx, "/api/integrations/connections", q, &out)
+}
