@@ -1,5 +1,7 @@
 # meshery-mcp-poc
 
+[![ci](https://github.com/singhharsh1708/meshery-mcp-poc/actions/workflows/ci.yml/badge.svg)](https://github.com/singhharsh1708/meshery-mcp-poc/actions/workflows/ci.yml)
+
 A small, read-only [Model Context Protocol](https://modelcontextprotocol.io) server for [Meshery](https://meshery.io), built as a proof-of-concept for the LFX Term 3 2026 "Meshery MCP Server" project ([cncf/mentoring#2019](https://github.com/cncf/mentoring/issues/2019)).
 
 It speaks MCP over **stdio** (default) or **Streamable HTTP** and lets an AI client (Claude Desktop, MCP Inspector, …) read from a local Meshery Server. It exposes:
@@ -82,4 +84,8 @@ Unit tests (`meshery/client_test.go`) cover request paths, cookie auth, response
 
 ## Scope
 
-This is a deliberately small vertical slice of the funded project: the Go REST client + cookie auth, the MCP tool/resource registration pattern (`mcp.AddTool` with struct-tag input schemas, `ReadOnlyHint` annotations), stdio transport, and the read-only/secret-exclusion posture. It is not the full server — the funded work adds Streamable HTTP, the registry/environments/perf tool surfaces, prompts, mutating tools behind `--allow-mutations`, CI/CD, and tests.
+This is a deliberately small vertical slice of the funded project: the Go REST client + cookie auth, the MCP tool/resource registration pattern (`mcp.AddTool` with struct-tag input schemas, `ReadOnlyHint` annotations), both transports (stdio and Streamable HTTP), CI, tests, and the read-only/secret-exclusion posture. It is not the full server — the funded work adds the registry/environments/perf tool surfaces, prompts, and mutating tools behind `--allow-mutations`.
+
+## License
+
+[Apache License 2.0](LICENSE), matching Meshery, so any of this can be folded into [meshery-extensions/meshery-mcp-server](https://github.com/meshery-extensions/meshery-mcp-server) as-is.
