@@ -40,10 +40,12 @@ Requires Go 1.25+. Depends on `github.com/modelcontextprotocol/go-sdk` v1.7.0 an
 ./meshery-mcp-poc
 
 # Streamable HTTP (spec 2025-03-26, the transport that superseded HTTP+SSE)
-./meshery-mcp-poc -transport http -addr :8080
+./meshery-mcp-poc -transport http
 ```
 
-The HTTP mode builds a fresh server per session and validates the `Origin` header (via `http.CrossOriginProtection`) to guard against DNS-rebinding.
+The HTTP mode builds a fresh server per session and validates the `Origin` header (via `http.CrossOriginProtection`) to guard browsers against DNS-rebinding.
+
+It binds `127.0.0.1:8080` by default, deliberately. This server acts with the Meshery credentials of whoever started it, and two things mean a wider bind hands those credentials to the network: the SDK's rebinding guard only engages when the accepting local address is loopback, and `CrossOriginProtection` allows any request that sends no `Origin` or `Sec-Fetch-Site` header, which is every non-browser client. Changing `-addr` to a wildcard address without putting real authentication in front of it lets any host that can reach the port read your Meshery data.
 
 ## Point it at a local Meshery
 

@@ -1,6 +1,7 @@
 package meshery
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -118,31 +119,87 @@ func excludeSecrets(in []TopologyComponent) (kept []TopologyComponent, dropped i
 
 // GetDesignTopology returns the component graph of a saved design via
 // GET /api/pattern/{id}.
+//
+// Meshery has changed both the name and the shape of this field over time.
+// Current releases marshal MesheryPattern.PatternFile as a JSON *string* under
+// "patternFile"; older ones used "pattern_file", and the design-file payload is
+// also seen as a nested object under "designFile". decodeDesignFile accepts all
+// of those rather than silently returning an empty graph when the spelling
+// changes.
 func (c *Client) GetDesignTopology(ctx context.Context, designID string) (*Topology, error) {
 	if designID == "" {
 		return nil, fmt.Errorf("design id is required")
 	}
 	var out struct {
-		ID          string      `json:"id"`
-		Name        string      `json:"name"`
-		PatternFile patternFile `json:"pattern_file"`
+		ID   string `json:"id"`
+		Name string `json:"name"`
+
+		PatternFile     json.RawMessage `json:"patternFile"`
+		PatternFileSnak json.RawMessage `json:"pattern_file"`
+		DesignFile      json.RawMessage `json:"designFile"`
+		DesignFileSnake json.RawMessage `json:"design_file"`
 	}
 	if err := c.get(ctx, "/api/pattern/"+url.PathEscape(designID), nil, &out); err != nil {
 		return nil, err
 	}
-	name := out.PatternFile.Name
+
+	raw := firstNonEmpty(out.PatternFile, out.PatternFileSnak, out.DesignFile, out.DesignFileSnake)
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("design %s carried no design file: none of patternFile, pattern_file, designFile or design_file were present", designID)
+	}
+	pf, err := decodeDesignFile(raw)
+	if err != nil {
+		return nil, fmt.Errorf("design %s: %w", designID, err)
+	}
+
+	name := pf.Name
 	if name == "" {
 		name = out.Name
 	}
-	kept, dropped := excludeSecrets(out.PatternFile.Components)
+	kept, dropped := excludeSecrets(pf.Components)
 	return &Topology{
 		Name:            name,
-		SchemaVersion:   out.PatternFile.SchemaVersion,
+		SchemaVersion:   pf.SchemaVersion,
 		Components:      kept,
-		Relationships:   out.PatternFile.Relationships,
-		Evaluated:       true,
+		Relationships:   pf.Relationships,
+		Evaluated:       len(pf.Relationships) > 0,
 		ExcludedSecrets: dropped,
 	}, nil
+}
+
+func firstNonEmpty(vals ...json.RawMessage) json.RawMessage {
+	for _, v := range vals {
+		if len(v) > 0 && string(v) != "null" {
+			return v
+		}
+	}
+	return nil
+}
+
+// decodeDesignFile reads a design file that may arrive either as a nested JSON
+// object or as a JSON string containing the encoded design.
+func decodeDesignFile(raw json.RawMessage) (*patternFile, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) > 0 && trimmed[0] == '"' {
+		var inner string
+		if err := json.Unmarshal(trimmed, &inner); err != nil {
+			return nil, fmt.Errorf("design file is a string that could not be unquoted: %w", err)
+		}
+		trimmed = bytes.TrimSpace([]byte(inner))
+		if len(trimmed) == 0 {
+			return nil, fmt.Errorf("design file string was empty")
+		}
+		if trimmed[0] != '{' {
+			// Historically these were YAML. Say so rather than returning an
+			// empty graph that reads as a design with no components.
+			return nil, fmt.Errorf("design file is not JSON; this build cannot parse it")
+		}
+	}
+	var pf patternFile
+	if err := json.Unmarshal(trimmed, &pf); err != nil {
+		return nil, fmt.Errorf("design file could not be parsed: %w", err)
+	}
+	return &pf, nil
 }
 
 // ListWorkloads lists MeshSync-discovered resources in one namespace of one

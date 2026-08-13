@@ -69,7 +69,11 @@ type ListConnOutput struct {
 
 func main() {
 	transport := flag.String("transport", "stdio", "transport to serve: stdio or http")
-	addr := flag.String("addr", ":8080", "listen address for the http (streamable) transport")
+	// Loopback by default. This server acts with the user's Meshery credentials,
+	// and the SDK's DNS-rebinding guard only engages when the accepting local
+	// address is loopback, so a wildcard bind would let any host on the network
+	// drive it. Overriding this exposes those credentials to that network.
+	addr := flag.String("addr", "127.0.0.1:8080", "listen address for the http (streamable) transport")
 	flag.Parse()
 
 	c, err := meshery.NewFromEnv()
