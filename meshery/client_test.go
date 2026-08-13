@@ -2,6 +2,7 @@ package meshery
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -48,7 +49,7 @@ func TestListKubernetesResourcesExcludesSecrets(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	out, err := c.ListKubernetesResources(context.Background(), "", "", 0, 0)
+	out, err := c.ListKubernetesResources(context.Background(), "c1", "", "", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,6 +61,16 @@ func TestListKubernetesResourcesExcludesSecrets(t *testing.T) {
 			t.Fatalf("Secret was not excluded: %+v", out.Resources)
 		}
 	}
+	// TotalCount must come down with the filtered row, or the count and the
+	// list disagree and a model reports a resource it was never shown.
+	if out.TotalCount != 1 {
+		t.Errorf("TotalCount = %d, want 1 after excluding the Secret", out.TotalCount)
+	}
+	// Scoping the read to a cluster is mandatory: the handler filters with
+	// cluster_id IN (?), so an absent value returns nothing at all.
+	if !strings.Contains(rawQuery, `clusterIds=%5B%22c1%22%5D`) {
+		t.Errorf("clusterIds not sent as a JSON array: %s", rawQuery)
+	}
 	// The client must never request the columns that carry Secret payloads.
 	for _, bad := range []string{"spec=", "status=", "labels=", "annotations="} {
 		if strings.Contains(rawQuery, bad) {
@@ -68,19 +79,91 @@ func TestListKubernetesResourcesExcludesSecrets(t *testing.T) {
 	}
 }
 
-func TestListKubernetesResourcesDoesNotForwardSecretKind(t *testing.T) {
-	var rawQuery string
+// TestListKubernetesResourcesRefusesSecretKind pins that asking for Secrets is
+// refused outright. Previously the kind filter was silently dropped, so the
+// request widened to every other kind and returned that as the answer.
+func TestListKubernetesResourcesRefusesSecretKind(t *testing.T) {
+	called := false
 	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rawQuery = r.URL.RawQuery
-		_, _ = w.Write([]byte(`{"page":0,"pageSize":25,"totalCount":0,"resources":[]}`))
+		called = true
+		_, _ = w.Write([]byte(`{"page":0,"pageSize":25,"totalCount":3,"resources":[
+			{"kind":"Deployment","apiVersion":"apps/v1","metadata":{"name":"web","namespace":"default"}},
+			{"kind":"Pod","apiVersion":"v1","metadata":{"name":"web-0","namespace":"default"}}
+		]}`))
 	}))
 	defer srv.Close()
 
-	if _, err := c.ListKubernetesResources(context.Background(), "Secret", "", 0, 0); err != nil {
+	out, err := c.ListKubernetesResources(context.Background(), "c1", "Secret", "", 0, 0)
+	if err == nil {
+		t.Fatalf("expected a refusal for kind=Secret, got %+v", out)
+	}
+	if !errors.Is(err, ErrSecretKindRefused) {
+		t.Errorf("error = %v, want ErrSecretKindRefused", err)
+	}
+	if called {
+		t.Error("no request should reach Meshery when Secrets are requested")
+	}
+}
+
+// TestListKubernetesResourcesRequiresCluster guards the empty IN clause: an
+// absent cluster id makes the handler match zero rows, which reads as an empty
+// cluster rather than a mistake.
+func TestListKubernetesResourcesRequiresCluster(t *testing.T) {
+	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("no request should be made without a cluster id")
+	}))
+	defer srv.Close()
+
+	if _, err := c.ListKubernetesResources(context.Background(), "", "", "", 0, 0); err == nil {
+		t.Fatal("expected an error when the cluster id is empty")
+	}
+}
+
+// TestGetMeshSyncSummaryRequiresClusterAndSpelling covers the parameter name
+// that differs from its sibling endpoint: summary takes a repeated singular
+// clusterId, not the JSON-encoded clusterIds array.
+func TestGetMeshSyncSummaryRequiresClusterAndSpelling(t *testing.T) {
+	var rawQuery string
+	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawQuery = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"kinds":[{"kind":"Pod","count":3}]}`))
+	}))
+	defer srv.Close()
+
+	if _, err := c.GetMeshSyncSummary(context.Background()); err == nil {
+		t.Error("expected an error with no cluster id, since the endpoint answers 400")
+	}
+	if _, err := c.GetMeshSyncSummary(context.Background(), "c1"); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(rawQuery, "kind=Secret") {
-		t.Errorf("kind=Secret must not be forwarded: %s", rawQuery)
+	if !strings.Contains(rawQuery, "clusterId=c1") {
+		t.Errorf("summary must send the singular repeated clusterId: %s", rawQuery)
+	}
+	if strings.Contains(rawQuery, "clusterIds=") {
+		t.Errorf("summary must not send the plural JSON array spelling: %s", rawQuery)
+	}
+}
+
+// TestListKubernetesContextsParsesIdentifiers pins that the three identifiers
+// stay distinct, since conflating them is the main way these tools go wrong.
+func TestListKubernetesContextsParsesIdentifiers(t *testing.T) {
+	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"page":0,"pageSize":25,"totalCount":1,"contexts":[
+			{"id":"ctx-1","name":"minikube","server":"https://127.0.0.1:6443","version":"v1.31.0",
+			 "connectionId":"conn-1","kubernetesServerId":"ksid-1"}]}`))
+	}))
+	defer srv.Close()
+
+	out, err := c.ListKubernetesContexts(context.Background(), 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Contexts) != 1 {
+		t.Fatalf("want 1 context, got %d", len(out.Contexts))
+	}
+	got := out.Contexts[0]
+	if got.KubernetesServerID != "ksid-1" || got.ConnectionID != "conn-1" || got.ID != "ctx-1" {
+		t.Errorf("identifiers conflated: %+v", got)
 	}
 }
 

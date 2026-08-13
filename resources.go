@@ -13,6 +13,7 @@ import (
 
 const (
 	clusterTopologyTemplate = "meshery://clusters/{cluster_id}/topology"
+	clusterSummaryTemplate  = "meshery://clusters/{cluster_id}/summary"
 	workloadsTemplate       = "meshery://clusters/{cluster_id}/namespaces/{namespace}/workloads"
 	designTopologyTemplate  = "meshery://designs/{design_id}/topology"
 )
@@ -21,6 +22,7 @@ const (
 // re-matches the concrete URI against its own compiled template.
 var (
 	clusterTopologyPattern = uritemplate.MustNew(clusterTopologyTemplate)
+	clusterSummaryPattern  = uritemplate.MustNew(clusterSummaryTemplate)
 	workloadsPattern       = uritemplate.MustNew(workloadsTemplate)
 	designTopologyPattern  = uritemplate.MustNew(designTopologyTemplate)
 )
@@ -88,11 +90,41 @@ func addTopologyResources(s *mcp.Server, c *meshery.Client) {
 		if vals == nil {
 			return nil, mcp.ResourceNotFoundError(req.Params.URI)
 		}
-		topo, err := c.GetClusterTopology(ctx, vals.Get("cluster_id").String())
+		// An empty variable still matches the template, and an empty cluster id
+		// would widen the query to every cluster rather than narrowing it.
+		clusterID := vals.Get("cluster_id").String()
+		if clusterID == "" {
+			return nil, mcp.ResourceNotFoundError(req.Params.URI)
+		}
+		topo, err := c.GetClusterTopology(ctx, clusterID)
 		if err != nil {
 			return nil, err
 		}
 		return jsonResource(req.Params.URI, topo)
+	})
+
+	s.AddResourceTemplate(&mcp.ResourceTemplate{
+		Name:        "cluster-summary",
+		Title:       "Per-kind resource counts for a cluster",
+		URITemplate: clusterSummaryTemplate,
+		MIMEType:    "application/json",
+		Description: "MeshSync's summary of what was discovered in a cluster, counted by kind, plus the namespaces present. Requires a cluster id; the underlying endpoint answers 400 without one.",
+	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		vals := clusterSummaryPattern.Match(req.Params.URI)
+		if vals == nil {
+			return nil, mcp.ResourceNotFoundError(req.Params.URI)
+		}
+		clusterID := vals.Get("cluster_id").String()
+		if clusterID == "" {
+			return nil, mcp.ResourceNotFoundError(req.Params.URI)
+		}
+		data, err := c.GetMeshSyncSummary(ctx, clusterID)
+		if err != nil {
+			return nil, err
+		}
+		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{
+			{URI: req.Params.URI, MIMEType: "application/json", Text: string(data)},
+		}}, nil
 	})
 
 	s.AddResourceTemplate(&mcp.ResourceTemplate{
@@ -106,7 +138,12 @@ func addTopologyResources(s *mcp.Server, c *meshery.Client) {
 		if vals == nil {
 			return nil, mcp.ResourceNotFoundError(req.Params.URI)
 		}
-		r, err := c.ListWorkloads(ctx, vals.Get("cluster_id").String(), vals.Get("namespace").String(), 0, 0)
+		clusterID, namespace := vals.Get("cluster_id").String(), vals.Get("namespace").String()
+		if clusterID == "" || namespace == "" {
+			// Either empty would drop its filter and silently widen the read.
+			return nil, mcp.ResourceNotFoundError(req.Params.URI)
+		}
+		r, err := c.ListWorkloads(ctx, clusterID, namespace, 0, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -133,7 +170,11 @@ func addTopologyResources(s *mcp.Server, c *meshery.Client) {
 		if vals == nil {
 			return nil, mcp.ResourceNotFoundError(req.Params.URI)
 		}
-		topo, err := c.GetDesignTopology(ctx, vals.Get("design_id").String())
+		designID := vals.Get("design_id").String()
+		if designID == "" {
+			return nil, mcp.ResourceNotFoundError(req.Params.URI)
+		}
+		topo, err := c.GetDesignTopology(ctx, designID)
 		if err != nil {
 			return nil, err
 		}

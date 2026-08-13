@@ -46,19 +46,17 @@ func addPrompts(s *mcp.Server) {
 		}
 		b.WriteString("Suggested order:\n\n")
 		if clusterID == "" {
-			b.WriteString("1. Call meshery_list_kubernetes_connections to find the cluster and confirm its status is connected. A disconnected cluster explains stale data before anything else does.\n")
+			b.WriteString("1. Call meshery_list_kubernetes_contexts. Every cluster-scoped resource below needs the clusterId it returns, which is the Kubernetes server ID and is not the same value as the connection or context id in the same record. Then call meshery_list_kubernetes_connections to confirm the connection is live, since a disconnected cluster explains stale data before anything else does.\n")
+			b.WriteString("2. Read meshery://clusters/{cluster_id}/summary for per-kind counts, to see which resource kinds exist at all.\n")
+			b.WriteString("3. Read meshery://clusters/{cluster_id}/topology for the component graph and how workloads relate.\n")
+			b.WriteString("4. Narrow to a namespace with meshery://clusters/{cluster_id}/namespaces/{namespace}/workloads.\n")
 		} else {
-			fmt.Fprintf(&b, "1. Confirm cluster %s is connected via meshery_list_kubernetes_connections. A disconnected cluster explains stale data before anything else does.\n", clusterID)
-		}
-		b.WriteString("2. Read meshery://meshsync/summary for a per-kind count, to see which resource kinds exist at all.\n")
-		if clusterID != "" {
+			fmt.Fprintf(&b, "1. Confirm cluster %s is connected via meshery_list_kubernetes_connections. A disconnected cluster explains stale data before anything else does. If %s turns out not to be a Kubernetes server ID, call meshery_list_kubernetes_contexts to get the right one.\n", clusterID, clusterID)
+			fmt.Fprintf(&b, "2. Read meshery://clusters/%s/summary for per-kind counts, to see which resource kinds exist at all.\n", clusterID)
 			fmt.Fprintf(&b, "3. Read meshery://clusters/%s/topology for the component graph and how workloads relate.\n", clusterID)
 			fmt.Fprintf(&b, "4. Narrow to a namespace with meshery://clusters/%s/namespaces/{namespace}/workloads.\n", clusterID)
-		} else {
-			b.WriteString("3. Read meshery://clusters/{cluster_id}/topology for the component graph.\n")
-			b.WriteString("4. Narrow to a namespace with meshery://clusters/{cluster_id}/namespaces/{namespace}/workloads.\n")
 		}
-		b.WriteString("\nTwo things to keep in mind while reasoning:\n\n")
+		b.WriteString("\nThings to keep in mind while reasoning:\n\n")
 		b.WriteString("- The topology resource reports an evaluated field. When it is false the relationship evaluation did not produce edges, which is not the same as the workloads having no relationships. Do not conclude a cluster is disconnected internally on that basis.\n")
 		b.WriteString("- This data comes from MeshSync's discovered state, not a live read against the API server, so it lags. Say so when a conclusion depends on freshness.\n")
 		b.WriteString("- Secrets are deliberately excluded from every response. Their absence is not evidence that none exist.\n")

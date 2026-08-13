@@ -3,11 +3,14 @@ package meshery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -74,7 +77,14 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("meshery GET %s -> %s", path, resp.Status)
+		// Include Meshery's own message. Without it the model receives a bare
+		// status line and cannot tell a missing filter from an expired session.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		detail := strings.TrimSpace(string(body))
+		if detail == "" {
+			return fmt.Errorf("meshery GET %s -> %s", path, resp.Status)
+		}
+		return fmt.Errorf("meshery GET %s -> %s: %s", path, resp.Status, detail)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
@@ -128,19 +138,38 @@ type MeshSyncResponse struct {
 	Resources  []K8sResource `json:"resources"`
 }
 
-// ListKubernetesResources lists MeshSync-discovered resources.
+// ErrSecretKindRefused is returned when a caller asks specifically for Secrets.
+// Dropping the filter instead would return every other kind as though it were
+// the answer, which is a worse failure than refusing.
+var ErrSecretKindRefused = errors.New("this server does not return Kubernetes Secrets")
+
+// ListKubernetesResources lists MeshSync-discovered resources for a cluster.
+//
+// clusterID is the Kubernetes server ID, which is what MeshSync keys resources
+// on. It is required: the handler filters with `cluster_id IN (?)` against
+// whatever it is given, so omitting it yields an empty IN clause and therefore
+// zero rows rather than everything.
 //
 // Security: it never requests spec/status/labels/annotations, so the server
 // omits those columns and Secret data / last-applied-config are never
 // serialized; Secrets are excluded outright as a second layer.
-func (c *Client) ListKubernetesResources(ctx context.Context, kind, namespace string, page, pageSize int) (*MeshSyncResponse, error) {
+func (c *Client) ListKubernetesResources(ctx context.Context, clusterID, kind, namespace string, page, pageSize int) (*MeshSyncResponse, error) {
+	if kind == "Secret" {
+		return nil, ErrSecretKindRefused
+	}
+	if clusterID == "" {
+		return nil, fmt.Errorf("cluster id is required; list the Kubernetes contexts first to obtain one")
+	}
 	if pageSize == 0 {
 		pageSize = 25
 	}
 	q := url.Values{}
 	q.Set("page", strconv.Itoa(page))
 	q.Set("pagesize", strconv.Itoa(pageSize))
-	if kind != "" && kind != "Secret" {
+	if err := setClusterIDs(q, clusterID); err != nil {
+		return nil, err
+	}
+	if kind != "" {
 		q.Add("kind", kind)
 	}
 	if namespace != "" {
@@ -150,21 +179,93 @@ func (c *Client) ListKubernetesResources(ctx context.Context, kind, namespace st
 	if err := c.get(ctx, "/api/system/meshsync/resources", q, &out); err != nil {
 		return nil, err
 	}
-	filtered := out.Resources[:0]
-	for _, r := range out.Resources {
-		if r.Kind != "Secret" {
-			filtered = append(filtered, r)
-		}
-	}
-	out.Resources = filtered
+	excludeSecretResources(&out)
 	return &out, nil
 }
 
-// GetMeshSyncSummary returns the raw MeshSync resource summary for the read-only
-// MCP resource (GET /api/system/meshsync/resources/summary).
-func (c *Client) GetMeshSyncSummary(ctx context.Context) (json.RawMessage, error) {
+// excludeSecretResources drops Secret rows and reduces TotalCount to match, so
+// the count and the list cannot disagree.
+func excludeSecretResources(out *MeshSyncResponse) {
+	filtered := out.Resources[:0]
+	for _, r := range out.Resources {
+		if r.Kind == "Secret" {
+			if out.TotalCount > 0 {
+				out.TotalCount--
+			}
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+	out.Resources = filtered
+}
+
+// setClusterIDs writes the JSON-encoded array form that
+// /api/system/meshsync/resources expects. Note the summary endpoint next door
+// spells the same filter differently; see GetMeshSyncSummary.
+func setClusterIDs(q url.Values, clusterIDs ...string) error {
+	ids, err := json.Marshal(clusterIDs)
+	if err != nil {
+		return err
+	}
+	q.Set("clusterIds", string(ids))
+	return nil
+}
+
+// GetMeshSyncSummary returns the raw MeshSync resource summary
+// (GET /api/system/meshsync/resources/summary).
+//
+// This endpoint requires at least one cluster and answers 400 without one. It
+// also spells the parameter differently from its sibling: a repeated singular
+// `clusterId`, rather than the JSON-encoded `clusterIds` array that
+// /api/system/meshsync/resources parses.
+func (c *Client) GetMeshSyncSummary(ctx context.Context, clusterIDs ...string) (json.RawMessage, error) {
+	if len(clusterIDs) == 0 {
+		return nil, fmt.Errorf("at least one cluster id is required; list the Kubernetes contexts first to obtain one")
+	}
+	q := url.Values{}
+	for _, id := range clusterIDs {
+		if id == "" {
+			return nil, fmt.Errorf("cluster id must not be empty")
+		}
+		q.Add("clusterId", id)
+	}
 	var raw json.RawMessage
-	return raw, c.get(ctx, "/api/system/meshsync/resources/summary", nil, &raw)
+	return raw, c.get(ctx, "/api/system/meshsync/resources/summary", q, &raw)
+}
+
+// KubernetesContext ties together the three identifiers Meshery uses for a
+// cluster, which are easy to confuse: ID addresses a design deployment target,
+// ConnectionID addresses the connection record, and KubernetesServerID is what
+// MeshSync keys discovered resources on.
+type KubernetesContext struct {
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	Server             string `json:"server"`
+	Version            string `json:"version"`
+	ConnectionID       string `json:"connectionId"`
+	KubernetesServerID string `json:"kubernetesServerId"`
+}
+
+// ContextsResponse wraps GET /api/system/kubernetes/contexts.
+type ContextsResponse struct {
+	Page       uint64               `json:"page"`
+	PageSize   uint64               `json:"pageSize"`
+	TotalCount int                  `json:"totalCount"`
+	Contexts   []*KubernetesContext `json:"contexts"`
+}
+
+// ListKubernetesContexts lists the Kubernetes contexts Meshery knows about.
+// This is the only call that yields a Kubernetes server ID, so it is the entry
+// point for every cluster-scoped tool and resource here.
+func (c *Client) ListKubernetesContexts(ctx context.Context, page, pageSize int) (*ContextsResponse, error) {
+	if pageSize == 0 {
+		pageSize = 25
+	}
+	q := url.Values{}
+	q.Set("page", strconv.Itoa(page))
+	q.Set("pagesize", strconv.Itoa(pageSize))
+	var out ContextsResponse
+	return &out, c.get(ctx, "/api/system/kubernetes/contexts", q, &out)
 }
 
 // Connection is a Meshery connection (subset of GET /api/integrations/connections).

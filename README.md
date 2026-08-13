@@ -6,16 +6,29 @@ A small, read-only [Model Context Protocol](https://modelcontextprotocol.io) ser
 
 It speaks MCP over **stdio** (default) or **Streamable HTTP** and lets an AI client (Claude Desktop, MCP Inspector, …) read from a local Meshery Server. It exposes:
 
+- **`meshery_list_kubernetes_contexts`** — the entry point for anything cluster-scoped, via `GET /api/system/kubernetes/contexts`
 - **`meshery_list_designs`** — lists Meshery designs via `GET /api/pattern`
-- **`meshery_list_kubernetes_resources`** — lists MeshSync-discovered Kubernetes resources via `GET /api/system/meshsync/resources`
+- **`meshery_list_kubernetes_resources`** — lists MeshSync-discovered Kubernetes resources for one cluster via `GET /api/system/meshsync/resources`
 - **`meshery_list_kubernetes_connections`** — lists the Kubernetes cluster connections Meshery is managing via `GET /api/integrations/connections?kind=kubernetes`
-- **`meshery://meshsync/summary`** (resource) — the MeshSync resource summary via `GET /api/system/meshsync/resources/summary`
 
 Templated resources (RFC 6570), with `resources/subscribe` supported:
 
 - **`meshery://clusters/{cluster_id}/topology`** — the discovered state of a cluster as a graph, components as nodes and relationships as edges
+- **`meshery://clusters/{cluster_id}/summary`** — per-kind resource counts for a cluster
 - **`meshery://clusters/{cluster_id}/namespaces/{namespace}/workloads`** — resources in one namespace of one cluster
 - **`meshery://designs/{design_id}/topology`** — component graph of a saved design
+
+## Three identifiers, and why the contexts tool comes first
+
+Meshery uses three different identifiers for what a user calls "my cluster", and mixing them up produces empty results rather than errors. `GET /api/system/kubernetes/contexts` returns all three together, which is why `meshery_list_kubernetes_contexts` is the entry point:
+
+| Value | What it addresses |
+|---|---|
+| `kubernetesServerId` | what MeshSync keys discovered resources on; this is the `cluster_id` every resource here takes |
+| `connectionId` | the connection record, used by Meshery's own events and connection APIs |
+| `id` (context id) | the deployment target, passed as `?contexts=` when deploying a design |
+
+The cluster-scoped endpoints are also unforgiving about it. `GET /api/system/meshsync/resources` filters with `cluster_id IN (?)` against whatever it is given, so omitting the filter produces an empty `IN` clause and returns nothing at all rather than everything. Its sibling `/resources/summary` requires a cluster too and answers 400 without one, and it spells the parameter differently: a repeated singular `clusterId`, not the JSON-encoded `clusterIds` array the resources endpoint parses.
 
 Prompts (guided read-only workflows):
 
