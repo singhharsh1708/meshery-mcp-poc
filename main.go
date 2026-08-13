@@ -103,7 +103,19 @@ func main() {
 // registered against the given Meshery client. Kept separate from main so tests
 // can build it against a mock client.
 func newServer(c *meshery.Client) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "meshery-mcp-poc", Version: "0.1.0"}, nil)
+	// Both handlers must be set for the server to advertise
+	// capabilities.resources.subscribe.
+	subs := newSubscriptions()
+	s := mcp.NewServer(&mcp.Implementation{Name: "meshery-mcp-poc", Version: "0.1.0"}, &mcp.ServerOptions{
+		SubscribeHandler: func(_ context.Context, req *mcp.SubscribeRequest) error {
+			subs.add(req.Params.URI)
+			return nil
+		},
+		UnsubscribeHandler: func(_ context.Context, req *mcp.UnsubscribeRequest) error {
+			subs.remove(req.Params.URI)
+			return nil
+		},
+	})
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "meshery_list_designs",
@@ -173,6 +185,8 @@ func newServer(c *meshery.Client) *mcp.Server {
 			{URI: summaryURI, MIMEType: "application/json", Text: string(data)},
 		}}, nil
 	})
+
+	addTopologyResources(s, c)
 
 	return s
 }
