@@ -23,7 +23,7 @@ Prompts (guided read-only workflows):
 - **`review_design`** — structured design review weighted toward a chosen concern
 - **`compare_designs`** — diff two designs' component graphs
 
-No mutating endpoints are registered. Secrets are never surfaced, and `spec`/`status`/`labels`/`annotations` are never requested from MeshSync, so Secret data and last-applied-config never reach the model.
+No mutating endpoints are registered. `spec`/`status`/`labels`/`annotations` are never requested from MeshSync, so Secret data and last-applied-config never reach the model, and Secrets are filtered out of every path that returns resources or components. The topology resources report an `excludedSecrets` count so a filtered graph is distinguishable from one that never contained any.
 
 ## Build
 
@@ -31,7 +31,7 @@ No mutating endpoints are registered. Secrets are never surfaced, and `spec`/`st
 go build -o meshery-mcp-poc .
 ```
 
-Requires Go 1.25+. Depends only on `github.com/modelcontextprotocol/go-sdk` v1.7.0.
+Requires Go 1.25+. Depends on `github.com/modelcontextprotocol/go-sdk` v1.7.0 and `github.com/yosida95/uritemplate/v3`, which the SDK also uses and which the resource handlers need to match URI templates.
 
 ## Transports
 
@@ -70,10 +70,10 @@ curl -s -b "token=$(jq -r .token ~/.meshery/auth.json); meshery-provider=$(jq -r
 {
   "mcpServers": {
     "meshery": {
-      "command": "/Users/harsh/meshery-mcp-poc/meshery-mcp-poc",
+      "command": "/absolute/path/to/meshery-mcp-poc",
       "env": {
         "MESHERY_URL": "http://localhost:9081",
-        "MESHERY_TOKEN_PATH": "/Users/harsh/.meshery/auth.json"
+        "MESHERY_TOKEN_PATH": "/absolute/path/to/home/.meshery/auth.json"
       }
     }
   }
@@ -92,7 +92,9 @@ npx @modelcontextprotocol/inspector ./meshery-mcp-poc
 go test ./... -race
 ```
 
-Unit tests (`meshery/client_test.go`) cover request paths, cookie auth, response parsing, Secret exclusion, and that `spec`/`status`/`labels`/`annotations` are never requested. An end-to-end test (`server_test.go`) wires the MCP server to a client over the SDK's in-memory transport and drives it against a mock Meshery, checking the tools return data and that Secrets never reach the output.
+Unit tests cover request paths, cookie auth, response parsing, and Secret exclusion on every path that returns resources or components, including both topology paths (`meshery/client_test.go`, `meshery/topology_test.go`). They also assert positive controls on the query itself, so a dropped `namespace`, `clusterIds` or `asDesign` parameter fails the build rather than passing silently, and that `spec`/`status`/`labels`/`annotations` are never requested.
+
+End-to-end tests (`server_test.go`, `resources_test.go`, `prompts_test.go`) wire the MCP server to a client over the SDK's in-memory transport and drive it against a mock Meshery, covering the tools, the templated resources, subscriptions and the prompts.
 
 ## Topology
 
