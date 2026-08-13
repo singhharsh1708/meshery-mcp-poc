@@ -56,6 +56,9 @@ type Topology struct {
 	// 200 when evaluation fails, so an empty Relationships slice is ambiguous:
 	// it means "no edges or evaluation failed", never a confirmed empty graph.
 	Evaluated bool `json:"evaluated"`
+	// ExcludedSecrets counts Secret components withheld from Components, so a
+	// caller can tell a graph that was filtered from one that had none.
+	ExcludedSecrets int `json:"excludedSecrets"`
 }
 
 // GetClusterTopology renders the discovered state of a cluster as a graph via
@@ -82,13 +85,35 @@ func (c *Client) GetClusterTopology(ctx context.Context, clusterID string) (*Top
 	if err := c.get(ctx, "/api/system/meshsync/resources", q, &out); err != nil {
 		return nil, err
 	}
+	kept, dropped := excludeSecrets(out.Design.Components)
 	return &Topology{
-		Name:          out.Design.Name,
-		SchemaVersion: out.Design.SchemaVersion,
-		Components:    out.Design.Components,
-		Relationships: out.Design.Relationships,
-		Evaluated:     len(out.Design.Relationships) > 0,
+		Name:            out.Design.Name,
+		SchemaVersion:   out.Design.SchemaVersion,
+		Components:      kept,
+		Relationships:   out.Design.Relationships,
+		Evaluated:       len(out.Design.Relationships) > 0,
+		ExcludedSecrets: dropped,
 	}, nil
+}
+
+// excludeSecrets drops Secret components and reports how many were removed.
+//
+// The asDesign path renders every discovered resource as a component, Secrets
+// included, so this filter is what keeps the read-only posture true for the
+// topology resources. Relationships are left untouched: they may still
+// reference a dropped component by id, but the relationship shape exposed here
+// carries no names or configuration, so nothing about a Secret leaks through
+// them.
+func excludeSecrets(in []TopologyComponent) (kept []TopologyComponent, dropped int) {
+	kept = make([]TopologyComponent, 0, len(in))
+	for _, c := range in {
+		if c.Component.Kind == "Secret" {
+			dropped++
+			continue
+		}
+		kept = append(kept, c)
+	}
+	return kept, dropped
 }
 
 // GetDesignTopology returns the component graph of a saved design via
@@ -109,12 +134,14 @@ func (c *Client) GetDesignTopology(ctx context.Context, designID string) (*Topol
 	if name == "" {
 		name = out.Name
 	}
+	kept, dropped := excludeSecrets(out.PatternFile.Components)
 	return &Topology{
-		Name:          name,
-		SchemaVersion: out.PatternFile.SchemaVersion,
-		Components:    out.PatternFile.Components,
-		Relationships: out.PatternFile.Relationships,
-		Evaluated:     true,
+		Name:            name,
+		SchemaVersion:   out.PatternFile.SchemaVersion,
+		Components:      kept,
+		Relationships:   out.PatternFile.Relationships,
+		Evaluated:       true,
+		ExcludedSecrets: dropped,
 	}, nil
 }
 
