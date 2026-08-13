@@ -17,6 +17,12 @@ Templated resources (RFC 6570), with `resources/subscribe` supported:
 - **`meshery://clusters/{cluster_id}/namespaces/{namespace}/workloads`** — resources in one namespace of one cluster
 - **`meshery://designs/{design_id}/topology`** — component graph of a saved design
 
+Prompts (guided read-only workflows):
+
+- **`debug_cluster`** — systematic cluster investigation, steering the model onto the tools and resources this server actually exposes
+- **`review_design`** — structured design review weighted toward a chosen concern
+- **`compare_designs`** — diff two designs' component graphs
+
 No mutating endpoints are registered. Secrets are never surfaced, and `spec`/`status`/`labels`/`annotations` are never requested from MeshSync, so Secret data and last-applied-config never reach the model.
 
 ## Build

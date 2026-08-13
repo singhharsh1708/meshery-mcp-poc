@@ -187,6 +187,7 @@ func newServer(c *meshery.Client) *mcp.Server {
 	})
 
 	addTopologyResources(s, c)
+	addPrompts(s)
 
 	return s
 }
