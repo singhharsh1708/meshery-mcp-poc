@@ -11,6 +11,12 @@ It speaks MCP over **stdio** (default) or **Streamable HTTP** and lets an AI cli
 - **`meshery_list_kubernetes_connections`** — lists the Kubernetes cluster connections Meshery is managing via `GET /api/integrations/connections?kind=kubernetes`
 - **`meshery://meshsync/summary`** (resource) — the MeshSync resource summary via `GET /api/system/meshsync/resources/summary`
 
+Templated resources (RFC 6570), with `resources/subscribe` supported:
+
+- **`meshery://clusters/{cluster_id}/topology`** — the discovered state of a cluster as a graph, components as nodes and relationships as edges
+- **`meshery://clusters/{cluster_id}/namespaces/{namespace}/workloads`** — resources in one namespace of one cluster
+- **`meshery://designs/{design_id}/topology`** — component graph of a saved design
+
 No mutating endpoints are registered. Secrets are never surfaced, and `spec`/`status`/`labels`/`annotations` are never requested from MeshSync, so Secret data and last-applied-config never reach the model.
 
 ## Build
@@ -81,6 +87,18 @@ go test ./... -race
 ```
 
 Unit tests (`meshery/client_test.go`) cover request paths, cookie auth, response parsing, Secret exclusion, and that `spec`/`status`/`labels`/`annotations` are never requested. An end-to-end test (`server_test.go`) wires the MCP server to a client over the SDK's in-memory transport and drives it against a mock Meshery, checking the tools return data and that Secrets never reach the output.
+
+## Topology
+
+The cluster topology resource is built on `GET /api/system/meshsync/resources?asDesign=true`, which makes Meshery render discovered cluster state as a design and run it through the relationship evaluator. The `design` field of the response is a `PatternFile`: its `components` are the graph's nodes and its `relationships` are its edges.
+
+Three things that shape the implementation, all from `server/handlers/meshsync_handler.go`:
+
+- `asDesign` is undocumented and absent from Meshery's `openapi.yml`, so it is treated here as an internal API that can move.
+- When it is set, the server clears the flat `resources` list. You get the graph or the list, never both in one call.
+- Evaluation runs at depth 1 with no timeout guard, and on failure the server falls back to the un-evaluated design and still returns 200. An empty `relationships` array therefore means "no edges were derived or evaluation failed", never a confirmed empty graph, which is why the resource reports an explicit `evaluated` field rather than presenting empty edges as healthy.
+
+MeshSync exposes no push channel for topology deltas, so subscriptions are poll-and-notify: the server tracks subscribed URIs and a real deployment re-reads them and sends `notifications/resources/updated` when content changes.
 
 ## Scope
 
