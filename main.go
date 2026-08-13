@@ -32,10 +32,32 @@ type ListDesignsOutput struct {
 }
 
 type ListK8sInput struct {
-	Kind      string `json:"kind,omitempty" jsonschema:"filter by Kubernetes kind e.g. Deployment, Pod, Service (Secret is not permitted)"`
+	ClusterID string `json:"clusterId" jsonschema:"required; the Kubernetes server ID of the cluster, as returned by meshery_list_kubernetes_contexts"`
+	Kind      string `json:"kind,omitempty" jsonschema:"filter by Kubernetes kind e.g. Deployment, Pod, Service; Secret is refused"`
 	Namespace string `json:"namespace,omitempty" jsonschema:"filter by namespace"`
 	Page      int    `json:"page,omitempty" jsonschema:"zero-based page index"`
 	PageSize  int    `json:"pageSize,omitempty" jsonschema:"results per page (default 25)"`
+}
+
+type ListContextsInput struct {
+	Page     int `json:"page,omitempty" jsonschema:"zero-based page index"`
+	PageSize int `json:"pageSize,omitempty" jsonschema:"results per page (default 25)"`
+}
+
+type ContextSummary struct {
+	Name string `json:"name"`
+	// ClusterID is the Kubernetes server ID, the value MeshSync keys resources
+	// on and the one the cluster tools and resources expect.
+	ClusterID    string `json:"clusterId"`
+	ConnectionID string `json:"connectionId"`
+	ContextID    string `json:"contextId"`
+	Server       string `json:"server"`
+	Version      string `json:"version"`
+}
+
+type ListContextsOutput struct {
+	TotalCount int              `json:"totalCount"`
+	Contexts   []ContextSummary `json:"contexts"`
 }
 
 type K8sSummary struct {
@@ -138,11 +160,37 @@ func newServer(c *meshery.Client) *mcp.Server {
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name:        "meshery_list_kubernetes_contexts",
+		Description: "List the Kubernetes contexts Meshery knows about. Call this first: it returns the clusterId that the other Kubernetes tools and the cluster resources require, alongside the separate connection and context identifiers. Read-only.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in ListContextsInput) (*mcp.CallToolResult, ListContextsOutput, error) {
+		r, err := c.ListKubernetesContexts(ctx, in.Page, in.PageSize)
+		if err != nil {
+			return nil, ListContextsOutput{}, err
+		}
+		out := ListContextsOutput{TotalCount: r.TotalCount}
+		for _, k := range r.Contexts {
+			if k == nil {
+				continue
+			}
+			out.Contexts = append(out.Contexts, ContextSummary{
+				Name:         k.Name,
+				ClusterID:    k.KubernetesServerID,
+				ConnectionID: k.ConnectionID,
+				ContextID:    k.ID,
+				Server:       k.Server,
+				Version:      k.Version,
+			})
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
 		Name:        "meshery_list_kubernetes_resources",
-		Description: "List MeshSync-discovered Kubernetes resources via GET /api/system/meshsync/resources. Read-only; Secrets and spec/status payloads excluded.",
+		Description: "List MeshSync-discovered Kubernetes resources for one cluster via GET /api/system/meshsync/resources. Requires a clusterId from meshery_list_kubernetes_contexts. Read-only; Secrets and spec/status payloads excluded.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in ListK8sInput) (*mcp.CallToolResult, ListK8sOutput, error) {
-		r, err := c.ListKubernetesResources(ctx, in.Kind, in.Namespace, in.Page, in.PageSize)
+		r, err := c.ListKubernetesResources(ctx, in.ClusterID, in.Kind, in.Namespace, in.Page, in.PageSize)
 		if err != nil {
 			return nil, ListK8sOutput{}, err
 		}
@@ -172,22 +220,6 @@ func newServer(c *meshery.Client) *mcp.Server {
 			out.Connections = append(out.Connections, ConnectionSummary{ID: cn.ID, Name: cn.Name, Kind: cn.Kind, Status: cn.Status})
 		}
 		return nil, out, nil
-	})
-
-	const summaryURI = "meshery://meshsync/summary"
-	s.AddResource(&mcp.Resource{
-		URI:         summaryURI,
-		Name:        "meshsync-topology-summary",
-		MIMEType:    "application/json",
-		Description: "Read-only MeshSync cluster resource summary (GET /api/system/meshsync/resources/summary).",
-	}, func(ctx context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-		data, err := c.GetMeshSyncSummary(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{
-			{URI: summaryURI, MIMEType: "application/json", Text: string(data)},
-		}}, nil
 	})
 
 	addTopologyResources(s, c)
