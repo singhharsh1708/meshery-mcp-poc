@@ -18,6 +18,58 @@ Templated resources (RFC 6570), with `resources/subscribe` supported:
 - **`meshery://clusters/{cluster_id}/namespaces/{namespace}/workloads`** — resources in one namespace of one cluster
 - **`meshery://designs/{design_id}/topology`** — component graph of a saved design
 
+## See it run
+
+```bash
+./demo/run.sh
+```
+
+Builds the server, starts a mock Meshery serving the real endpoint shapes, and drives the binary through a full MCP session over stdio: handshake, tools, resources, subscriptions and prompts. Every line of [the transcript](docs/DEMO.md) is a genuine JSON-RPC exchange with the process.
+
+A cluster topology read, straight from that run:
+
+```json
+{
+  "name": "minikube",
+  "components": [
+    {"id": "n1", "displayName": "productpage",     "component": {"kind": "Deployment"}},
+    {"id": "n2", "displayName": "productpage-svc", "component": {"kind": "Service"}},
+    {"id": "n4", "displayName": "reviews",         "component": {"kind": "Deployment"}}
+  ],
+  "relationships": [
+    {"id": "e1", "kind": "hierarchical", "subType": "parent"},
+    {"id": "e2", "kind": "edge",         "subType": "network"}
+  ],
+  "evaluated": true,
+  "excludedSecrets": 1
+}
+```
+
+Meshery returned four components. The fourth was a Secret named `db-credentials`, which is why `excludedSecrets` is 1 and why it is not above.
+
+## How it fits together
+
+```mermaid
+flowchart LR
+    C["AI client<br/>Claude Desktop · Inspector"]
+    subgraph S["meshery-mcp-poc"]
+        direction TB
+        T["stdio · Streamable HTTP"]
+        R["4 tools · 4 resources · 3 prompts"]
+        M["meshery.Client"]
+        T --> R --> M
+    end
+    MS["Meshery Server :9081"]
+    K["Kubernetes"]
+
+    C <-->|"JSON-RPC 2.0"| T
+    M -->|"token + meshery-provider cookies"| MS
+    MS -.->|"MeshSync"| K
+```
+
+The client never talks to Meshery and never sees a credential. [Architecture notes](docs/ARCHITECTURE.md) cover the design and the failure modes it guards against.
+
+
 ## Three identifiers, and why the contexts tool comes first
 
 Meshery uses three different identifiers for what a user calls "my cluster", and mixing them up produces empty results rather than errors. `GET /api/system/kubernetes/contexts` returns all three together, which is why `meshery_list_kubernetes_contexts` is the entry point:
@@ -107,6 +159,17 @@ npx @modelcontextprotocol/inspector ./meshery-mcp-poc
 go test ./... -race
 ```
 
+33 tests, 73.6% coverage on the server package and 80.7% on the Meshery client. Every guarantee below has a test that fails if it stops holding, verified red-green rather than assumed:
+
+| Guarantee | What breaks without it |
+|---|---|
+| Secrets excluded on every path | a Secret name reaches the model |
+| `kind: "Secret"` refused | the filter is dropped and every other kind is returned as the answer |
+| Empty template variables rejected | `meshery://clusters//topology` returns every cluster as one |
+| `clusterIds` sent as a JSON array | the handler matches zero rows and the cluster looks empty |
+| `evaluated` derived, never hardcoded | a failed evaluation reads as a graph with no edges |
+| Design file spellings and shapes | a current Meshery returns an empty design with no error |
+
 Unit tests cover request paths, cookie auth, response parsing, and Secret exclusion on every path that returns resources or components, including both topology paths (`meshery/client_test.go`, `meshery/topology_test.go`). They also assert positive controls on the query itself, so a dropped `namespace`, `clusterIds` or `asDesign` parameter fails the build rather than passing silently, and that `spec`/`status`/`labels`/`annotations` are never requested.
 
 End-to-end tests (`server_test.go`, `resources_test.go`, `prompts_test.go`) wire the MCP server to a client over the SDK's in-memory transport and drive it against a mock Meshery, covering the tools, the templated resources, subscriptions and the prompts.
@@ -126,6 +189,12 @@ MeshSync exposes no push channel for topology deltas, so subscriptions are poll-
 ## Scope
 
 This is a deliberately small vertical slice of the funded project: the Go REST client + cookie auth, the MCP tool/resource registration pattern (`mcp.AddTool` with struct-tag input schemas, `ReadOnlyHint` annotations), both transports (stdio and Streamable HTTP), CI, tests, and the read-only/secret-exclusion posture. It is not the full server — the funded work adds the registry/environments/perf tool surfaces, prompts, and mutating tools behind `--allow-mutations`.
+
+## What this has and has not been tested against
+
+Verified: the MCP protocol surface, against the compiled binary over stdio with a real client; every Meshery request shape, against the handlers in `meshery/meshery` at current master; the security guarantees, red-green.
+
+Not verified: behaviour against a live Meshery Server with a real cluster attached. The demo uses a mock serving the real payload shapes. Meshery ships an amd64-only image that crashes under emulation on arm64 during content seeding, so a live run has not been possible here. Worth stating plainly rather than implying more coverage than exists.
 
 ## License
 
