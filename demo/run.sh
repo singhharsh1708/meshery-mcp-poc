@@ -6,9 +6,12 @@ cd "$(dirname "$0")/.."
 echo '{"token":"demo-session-jwt","meshery-provider":"Meshery"}' > /tmp/mcp-demo-auth.json
 
 go build -o meshery-mcp-poc . 
+# A previous run may still hold the port, e.g. if it was interrupted.
+lsof -ti :9099 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+
 go run demo/mock_meshery.go & MOCK=$!
 trap 'kill $MOCK 2>/dev/null || true' EXIT
-until curl -sf -o /dev/null "http://127.0.0.1:9099/api/pattern"; do sleep 0.1; done
+until curl -sf -o /dev/null "http://127.0.0.1:9099/healthz"; do sleep 0.1; done
 
 # DEMO_PACE controls the pause between steps, in seconds. Default is readable;
 # set DEMO_PACE=0 to run flat out.
