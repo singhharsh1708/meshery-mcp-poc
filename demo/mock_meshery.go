@@ -71,8 +71,16 @@ func main() {
 		write(w, `{"id":"d-1001","name":"bookinfo","patternFile":"{\"name\":\"bookinfo\",\"schemaVersion\":\"designs.meshery.io/v1beta1\",\"components\":[{\"id\":\"c1\",\"displayName\":\"productpage\",\"component\":{\"kind\":\"Deployment\",\"version\":\"apps/v1\"}},{\"id\":\"c2\",\"displayName\":\"tls-cert\",\"component\":{\"kind\":\"Secret\",\"version\":\"v1\"}}],\"relationships\":[{\"id\":\"r1\",\"kind\":\"edge\"}]}"}`)
 	})
 
+	// Readiness probe, deliberately outside the request log so it does not
+	// look like an unauthenticated call in a demo recording.
+	root := http.NewServeMux()
+	root.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	root.Handle("/", logCookies(mux))
+
 	log.Printf("mock meshery on %s", addr)
-	if err := http.ListenAndServe(addr, logCookies(mux)); err != nil {
+	if err := http.ListenAndServe(addr, root); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}
 }
