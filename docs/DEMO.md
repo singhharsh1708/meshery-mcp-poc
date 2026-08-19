@@ -7,8 +7,8 @@ stdio. Nothing is simulated or hand-written. Reproduce it yourself:
 ./demo/run.sh
 ```
 
-It paces itself so the session is readable while it runs, about a minute end to
-end. `DEMO_PACE=0 ./demo/run.sh` runs it flat out in a couple of seconds.
+It paces itself so the session is readable while it runs, about twenty seconds
+end to end. `DEMO_PACE=2` slows it down; `DEMO_PACE=0` runs flat out.
 
 That builds the server, starts a mock Meshery on `127.0.0.1:9099` serving the
 real endpoint shapes, and drives the binary through a full MCP session.
