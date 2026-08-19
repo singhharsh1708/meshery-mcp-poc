@@ -12,7 +12,7 @@ import time
 
 # Seconds to pause between steps, so the session is readable while it runs.
 # Set DEMO_PACE=0 for a fast run.
-PACE = float(os.environ.get("DEMO_PACE", "2.5"))
+PACE = float(os.environ.get("DEMO_PACE", "0.8"))
 
 BIN = sys.argv[1] if len(sys.argv) > 1 else "./meshery-mcp-poc"
 TOKEN = sys.argv[2] if len(sys.argv) > 2 else "/tmp/mcp-demo-auth.json"

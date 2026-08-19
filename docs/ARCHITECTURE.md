@@ -1,8 +1,13 @@
 # Architecture
 
-A read-only Model Context Protocol server that lets an AI client query a Meshery
-instance. It is deliberately small: one process, one outbound dependency, no
-state of its own beyond a subscription set.
+This is a read-only MCP server that lets an AI client query a Meshery instance.
+One process, one outbound dependency, and no state of its own beyond a set of
+subscribed resource URIs.
+
+Most of what follows is not about MCP. The protocol side is small and the SDK
+does the heavy lifting. The interesting part is Meshery's API, which has a
+handful of endpoints that answer 200 with something other than what you asked
+for, and getting those wrong produces confident nonsense rather than an error.
 
 ## Shape
 
@@ -33,22 +38,26 @@ flowchart LR
     meshery -.->|"MeshSync discovery"| K["Kubernetes cluster"]
 ```
 
-The client never talks to Meshery and never sees a credential. The server holds
-the session cookies read from `~/.meshery/auth.json` and is the only component
-that makes outbound calls.
+The client never talks to Meshery and never sees a credential. Everything
+outbound goes through `meshery.Client`, which holds the session cookies read from
+`~/.meshery/auth.json`. Tools never build their own requests, so when the auth
+story changes, and it will, nothing above the client has to move.
 
-## Why a client, not an adapter
+## Why this is a client and not an adapter
 
-Meshery adapters are gRPC *servers* that Meshery dials out to, so they need no
-credential of their own and Meshery hands them the user's kubeconfigs. An MCP
-server sits on the other side of that relationship: it is a client of Meshery's
-REST API, so it does need a credential, and the only inbound credential Meshery
-accepts is a per-user session cookie minted by an interactive login. There is no
-service account or machine identity.
+Worth stating early because it drives the deployment question.
 
-That is why this runs next to the user's AI client, where `mesheryctl system
-login` has already written a token, rather than as a deployed service holding
-somebody's session.
+Meshery adapters are gRPC servers. Meshery dials out to them, which is why they
+need no credential of their own and why Meshery is willing to hand them the
+user's kubeconfigs. An MCP server is the other way round: it calls Meshery, so it
+needs a credential, and the only inbound credential Meshery accepts is a session
+cookie minted by an interactive browser login. No service account, no API key, no
+machine identity. Meshery's own `HandlerInterface` comment admits a mechanism for
+external systems does not exist yet.
+
+So this runs next to the user's AI client, where `mesheryctl system login` has
+already written a token. Running it as a deployed service would mean holding
+somebody's personal session, which is a different and worse problem.
 
 ## Request path
 
@@ -67,19 +76,24 @@ sequenceDiagram
     S-->>C: structured result, no Secret
 ```
 
-## The three identifiers
+## Three identifiers, one cluster
 
-The single most common way to get wrong-but-plausible answers out of Meshery is
-to confuse these. They all describe "my cluster" and none are interchangeable.
+This one cost the most time, so it goes near the top.
 
-| Value | Addresses | Where it comes from |
+Meshery has three different IDs for what a user calls "my cluster". They look
+alike, none are interchangeable, and using the wrong one returns an empty result
+rather than an error.
+
+| Value | What it addresses | Where you get it |
 |---|---|---|
 | `kubernetesServerId` | what MeshSync keys discovered resources on | `GET /api/system/kubernetes/contexts` |
-| `connectionId` | the connection record, used by events APIs | same call |
+| `connectionId` | the connection record, used by connection and event APIs | same call |
 | context `id` | the deployment target, passed as `?contexts=` | same call |
 
-`meshery_list_kubernetes_contexts` exists to return all three together, which is
-why every cluster-scoped tool and resource starts there.
+`meshery_list_kubernetes_contexts` exists purely because that endpoint is the
+only one returning all three together. It is the entry point for every
+cluster-scoped tool and resource here, and the `debug_cluster` prompt starts
+there for the same reason.
 
 ## Surface
 
@@ -104,46 +118,99 @@ flowchart TB
     end
 ```
 
-Topology is a resource rather than a tool because an agent should be able to
-attach cluster state as context without performing an action. Every tool carries
-`ReadOnlyHint`, so a client can auto-approve them.
+Topology is a resource rather than a tool on purpose. An agent should be able to
+attach cluster state as context without that counting as an action. Every tool
+carries `ReadOnlyHint` so a client can auto-approve it, which is worth setting
+explicitly because mcp-go's `NewTool` otherwise defaults tools to
+`destructiveHint: true`.
 
-## Security posture
+## Where the topology graph comes from
 
-Four things hold at once, and each has a test that fails if it stops holding.
+There is no topology endpoint. What there is, is an undocumented `asDesign=true`
+parameter on the MeshSync resources route, which makes Meshery render whatever it
+has discovered as a design and run it through the relationship evaluator. The
+resulting `PatternFile` has `components` for nodes and `relationships` for edges,
+which is exactly a graph.
 
-**Secrets never leave.** `spec`, `status`, `labels` and `annotations` are never
-requested, so Secret payloads are not serialized server-side in the first place.
-Secret objects are then filtered from every path that returns resources or
-components, including both topology graphs, and `excludedSecrets` reports the
-count so a filtered graph is distinguishable from an empty one.
+Four things about that path, all from reading `meshsync_handler.go`:
 
-**Asking for Secrets is refused, not widened.** An earlier version dropped the
-`kind` filter when it saw `Secret`, which turned "list the Secrets" into an
-unfiltered dump of everything else presented as the answer. It now errors before
-any request is made.
+Setting it clears the flat resource list, so you get the graph or the list and
+never both. Evaluation runs at depth 1, where the dedicated evaluate route uses
+5, so fewer derived relationships come back. There is no timeout guard, and a
+whole-cluster evaluation is not cheap.
 
-**Empty template variables are rejected.** `meshery://clusters//topology` matches
-the URI template with an empty variable, and an empty cluster id drops the filter
-and returns every cluster. That is now a not-found.
+And the one that matters: if evaluation fails, the handler logs it, falls back to
+the un-evaluated design, and still returns 200. So an empty `relationships` array
+means either "no edges" or "evaluation broke", with nothing to distinguish them.
+That is why the resource carries an explicit `evaluated` field instead of letting
+a caller assume.
 
-**The HTTP transport binds loopback.** The SDK's DNS-rebinding guard only engages
-when the accepting local address is loopback, and Go's `CrossOriginProtection`
-allows any request with no `Origin` header, which is every non-browser client. A
-wildcard bind would hand the user's Meshery credentials to the network.
+It is also absent from Meshery's OpenAPI spec, so it is isolated behind one
+client method on the assumption it can move.
 
-## Failure modes it refuses to paper over
+## Not leaking Secrets
 
-Meshery has several endpoints that answer 200 with data that means something
-other than it appears to. The server surfaces these rather than passing them on:
+Four separate things, because one of them was not enough.
 
-- Relationship evaluation can fail and still return 200 with an un-evaluated
-  design, so empty `relationships` is ambiguous. The `evaluated` flag says which
-  it was.
-- The design file arrives as a JSON string under `patternFile` on current
-  releases and `pattern_file` on older ones. Decoding one spelling only yields an
-  empty design with no error, so all four spellings and both shapes are accepted
-  and a missing design file is an error.
-- Meshery redirects unauthenticated API calls to a login page rather than
-  answering 401, so a naive client fails in the JSON decoder. Errors carry
+`spec`, `status`, `labels` and `annotations` are never requested, so Secret
+payloads are not serialized server-side to begin with. Secret objects are then
+filtered out of every path that returns resources or components, and that
+includes both topology graphs, which is where an earlier version leaked them: the
+flat list filtered correctly while the graph did not. The topology resources
+report `excludedSecrets` so a filtered graph is distinguishable from one that
+never had any.
+
+Asking for `kind: "Secret"` is refused outright. The first version dropped the
+`kind` filter when it saw `Secret`, which quietly turned "list the Secrets" into
+an unfiltered dump of everything else, presented as the answer. Failing open on a
+guard is worse than not having the guard.
+
+Empty URI template variables are rejected. `meshery://clusters//topology` matches
+the template with an empty variable, and an empty cluster id drops the filter and
+returns every cluster labelled as one. Now a not-found.
+
+## The HTTP transport binds loopback
+
+`-addr` defaults to `127.0.0.1:8080` and that default is load-bearing.
+
+The SDK's DNS-rebinding guard only engages when the accepting local address is
+loopback, so a wildcard bind skips it entirely. Go's `CrossOriginProtection`
+allows any request that arrives with no `Origin` or `Sec-Fetch-Site` header,
+which is every non-browser client. Put those together and a wildcard bind hands
+anything on the network a server that acts with your Meshery credentials. That
+was verified by driving it from a non-loopback address with a forged `Host` and
+reading design data back.
+
+Widening it is a deliberate act, and wants real authentication in front of it.
+
+## Failure modes it will not pass along
+
+Meshery has several endpoints where the honest answer and the empty answer look
+identical. The server distinguishes them rather than forwarding the ambiguity:
+
+- Relationship evaluation failing while still returning 200, covered above.
+- The design file arriving as a JSON string under `patternFile` on current
+  releases and `pattern_file` on older ones. Decoding one spelling gives you a
+  design with no components and no error. All four spellings and both shapes are
+  accepted, and a missing design file is an error.
+- `cluster_id IN (?)` with an empty list, which matches nothing. The cluster id
+  is required rather than optional so this fails in the client.
+- Unauthenticated calls being redirected to a login page rather than answering
+  401, so a client following redirects fails in the JSON decoder. Errors carry
   Meshery's own message so the cause is legible.
+
+The general rule: an empty result and a failed query should never look the same
+to whatever is reading them, and here that reader is a language model that will
+happily narrate either one as fact.
+
+## What has not been verified
+
+The protocol surface is exercised against the compiled binary over stdio, and
+every Meshery request shape is checked against the handlers in `meshery/meshery`
+at master. The security guarantees have red-green tests.
+
+What has not happened is a run against a live Meshery with a real cluster
+attached. `demo/` uses a mock that serves the real payload shapes, including the
+awkward ones. Meshery ships an amd64-only image that crashes during content
+seeding under emulation on arm64, so a live run has not been possible on this
+machine. Worth knowing before quoting any of this as proven end to end.
