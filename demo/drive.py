@@ -5,9 +5,14 @@ Every byte below is a genuine request/response exchange with the server
 process; nothing is simulated.
 """
 import json
+import os
 import subprocess
 import sys
 import time
+
+# Seconds to pause between steps, so the session is readable while it runs.
+# Set DEMO_PACE=0 for a fast run.
+PACE = float(os.environ.get("DEMO_PACE", "2.5"))
 
 BIN = sys.argv[1] if len(sys.argv) > 1 else "./meshery-mcp-poc"
 TOKEN = sys.argv[2] if len(sys.argv) > 2 else "/tmp/mcp-demo-auth.json"
@@ -31,7 +36,9 @@ def call(method, params=None, note=None):
         req["params"] = params
     if note:
         print(f"\n\033[1m# {note}\033[0m")
+        time.sleep(PACE * 0.6)
     print(f"\033[36m-> {json.dumps(req)}\033[0m")
+    time.sleep(PACE * 0.4)
     proc.stdin.write(json.dumps(req) + "\n")
     proc.stdin.flush()
     line = proc.stdout.readline()
@@ -41,6 +48,7 @@ def call(method, params=None, note=None):
         sys.exit(1)
     resp = json.loads(line)
     print(f"\033[32m<- {json.dumps(resp, indent=2)[:1400]}\033[0m")
+    time.sleep(PACE)
     return resp
 
 
@@ -55,6 +63,7 @@ def notify(method, params=None):
 print("=" * 72)
 print("meshery-mcp-poc :: live MCP session over stdio")
 print("=" * 72)
+time.sleep(PACE)
 
 r = call("initialize", {
     "protocolVersion": "2025-06-18",
