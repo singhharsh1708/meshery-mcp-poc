@@ -118,22 +118,22 @@ makes it the one surface testable without a login, and a good first tool target.
 
 ## 5. Phases
 
-**Phase 1 — foundation.** Scaffold, shared client with cookie auth and org
+**Phase 1, foundation.** Scaffold, shared client with cookie auth and org
 resolution, registration contract, CI. Exit criteria: a tool can be added in one
 file; the client is covered by tests that assert what was *sent*, not just what a
 permissive mock returned.
 
-**Phase 2 — read surface.** Designs, registry, connections and contexts as tools;
+**Phase 2, read surface.** Designs, registry, connections and contexts as tools;
 cluster topology, namespace workloads and design graphs as resources. Exit
 criteria: every guarantee has a red-green test; no endpoint is called without the
 parameters it requires.
 
-**Phase 3 — agent ergonomics.** Prompts encoding the traps above, output shaping
+**Phase 3, agent ergonomics.** Prompts encoding the traps above, output shaping
 so large registry and MeshSync payloads do not exhaust a context window,
 structured errors a model can act on. Exit criteria: an agent can answer "what is
 in my cluster and how is it wired" without a human correcting its reasoning.
 
-**Phase 4 — mutations, gated.** Deploy, undeploy and performance runs behind an
+**Phase 4, mutations, gated.** Deploy, undeploy and performance runs behind an
 explicit opt-in, driven off tool annotations so `--read-only` is one mechanism
 rather than a second list to forget.
 
