@@ -6,17 +6,17 @@ A small, read-only [Model Context Protocol](https://modelcontextprotocol.io) ser
 
 It speaks MCP over **stdio** (default) or **Streamable HTTP** and lets an AI client (Claude Desktop, MCP Inspector, …) read from a local Meshery Server. It exposes:
 
-- **`meshery_list_kubernetes_contexts`** — the entry point for anything cluster-scoped, via `GET /api/system/kubernetes/contexts`
-- **`meshery_list_designs`** — lists Meshery designs via `GET /api/pattern`
-- **`meshery_list_kubernetes_resources`** — lists MeshSync-discovered Kubernetes resources for one cluster via `GET /api/system/meshsync/resources`
-- **`meshery_list_kubernetes_connections`** — lists the Kubernetes cluster connections Meshery is managing via `GET /api/integrations/connections?kind=kubernetes`
+- **`meshery_list_kubernetes_contexts`**: the entry point for anything cluster-scoped, via `GET /api/system/kubernetes/contexts`
+- **`meshery_list_designs`**: lists Meshery designs via `GET /api/pattern`
+- **`meshery_list_kubernetes_resources`**: lists MeshSync-discovered Kubernetes resources for one cluster via `GET /api/system/meshsync/resources`
+- **`meshery_list_kubernetes_connections`**: lists the Kubernetes cluster connections Meshery is managing via `GET /api/integrations/connections?kind=kubernetes`
 
 Templated resources (RFC 6570), with `resources/subscribe` supported:
 
-- **`meshery://clusters/{cluster_id}/topology`** — the discovered state of a cluster as a graph, components as nodes and relationships as edges
-- **`meshery://clusters/{cluster_id}/summary`** — per-kind resource counts for a cluster
-- **`meshery://clusters/{cluster_id}/namespaces/{namespace}/workloads`** — resources in one namespace of one cluster
-- **`meshery://designs/{design_id}/topology`** — component graph of a saved design
+- **`meshery://clusters/{cluster_id}/topology`**: the discovered state of a cluster as a graph, components as nodes and relationships as edges
+- **`meshery://clusters/{cluster_id}/summary`**: per-kind resource counts for a cluster
+- **`meshery://clusters/{cluster_id}/namespaces/{namespace}/workloads`**: resources in one namespace of one cluster
+- **`meshery://designs/{design_id}/topology`**: component graph of a saved design
 
 ## See it run
 
@@ -84,9 +84,9 @@ The cluster-scoped endpoints are also unforgiving about it. `GET /api/system/mes
 
 Prompts (guided read-only workflows):
 
-- **`debug_cluster`** — systematic cluster investigation, steering the model onto the tools and resources this server actually exposes
-- **`review_design`** — structured design review weighted toward a chosen concern
-- **`compare_designs`** — diff two designs' component graphs
+- **`debug_cluster`**: systematic cluster investigation, steering the model onto the tools and resources this server actually exposes
+- **`review_design`**: structured design review weighted toward a chosen concern
+- **`compare_designs`**: diff two designs' component graphs
 
 No mutating endpoints are registered. `spec`/`status`/`labels`/`annotations` are never requested from MeshSync, so Secret data and last-applied-config never reach the model, and Secrets are filtered out of every path that returns resources or components. The topology resources report an `excludedSecrets` count so a filtered graph is distinguishable from one that never contained any.
 
@@ -101,7 +101,7 @@ Requires Go 1.25+. Depends on `github.com/modelcontextprotocol/go-sdk` v1.7.0 an
 ## Transports
 
 ```bash
-# stdio (default) — for local AI clients like Claude Desktop
+# stdio (default), for local AI clients like Claude Desktop
 ./meshery-mcp-poc
 
 # Streamable HTTP (spec 2025-03-26, the transport that superseded HTTP+SSE)
@@ -120,7 +120,7 @@ mesheryctl system login                # pick the local "Meshery" provider -> wr
 mesheryctl system config minikube      # (or kind|docker-desktop) so MeshSync has cluster data
 ```
 
-Auth uses the two cookies (`token`, `meshery-provider`) that `mesheryctl system login` writes to `~/.meshery/auth.json` — the same way `mesheryctl` authenticates. Override with `MESHERY_URL` and `MESHERY_TOKEN_PATH`.
+Auth uses the two cookies (`token`, `meshery-provider`) that `mesheryctl system login` writes to `~/.meshery/auth.json`, the same way `mesheryctl` authenticates. Override with `MESHERY_URL` and `MESHERY_TOKEN_PATH`.
 
 Sanity-check the endpoints the server calls:
 
@@ -131,7 +131,7 @@ curl -s -b "token=$(jq -r .token ~/.meshery/auth.json); meshery-provider=$(jq -r
 
 ## Use it from an MCP client
 
-**Claude Desktop** — `~/Library/Application Support/Claude/claude_desktop_config.json`:
+**Claude Desktop**: `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
@@ -188,7 +188,7 @@ MeshSync exposes no push channel for topology deltas, so subscriptions are poll-
 
 ## Scope
 
-This is a deliberately small vertical slice of the funded project: the Go REST client + cookie auth, the MCP tool/resource registration pattern (`mcp.AddTool` with struct-tag input schemas, `ReadOnlyHint` annotations), both transports (stdio and Streamable HTTP), CI, tests, and the read-only/secret-exclusion posture. It is not the full server — the funded work adds the registry/environments/perf tool surfaces, prompts, and mutating tools behind `--allow-mutations`.
+This is a deliberately small vertical slice of the funded project: the Go REST client + cookie auth, the MCP tool/resource registration pattern (`mcp.AddTool` with struct-tag input schemas, `ReadOnlyHint` annotations), both transports (stdio and Streamable HTTP), CI, tests, and the read-only/secret-exclusion posture. It is not the full server, the funded work adds the registry/environments/perf tool surfaces, prompts, and mutating tools behind `--allow-mutations`.
 
 ## What this has and has not been tested against
 
