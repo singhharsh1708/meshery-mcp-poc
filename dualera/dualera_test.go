@@ -371,3 +371,71 @@ func TestOneStalledRequestDoesNotBlockTheRest(t *testing.T) {
 		t.Fatalf("request 2 never got a reply because request 1 stalled the loop:\n%s", got)
 	}
 }
+
+// nullResult answers every request with {"result":null}, which is legal
+// JSON-RPC for a method with no return value.
+func nullResult(in io.Reader, out io.Writer) {
+	sc := bufio.NewScanner(in)
+	enc := json.NewEncoder(out)
+	for sc.Scan() {
+		var m struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if json.Unmarshal(sc.Bytes(), &m) != nil || len(m.ID) == 0 {
+			continue
+		}
+		if m.Method == "initialize" {
+			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(m.ID),
+				"result": map[string]any{"protocolVersion": "2025-11-25",
+					"capabilities": map[string]any{}, "serverInfo": map[string]any{"name": "w"}}})
+			continue
+		}
+		_, _ = out.Write([]byte(`{"jsonrpc":"2.0","id":` + string(m.ID) + `,"result":null}` + "\n"))
+	}
+}
+
+func TestNullResultDoesNotKillTheBridge(t *testing.T) {
+	got := drive(t, nullResult,
+		[]map[string]any{modern(1, "tools/list"), modern(2, "tools/list")},
+		700*time.Millisecond)
+
+	if !strings.Contains(got, `"id":2`) {
+		t.Fatalf("the bridge died on a null result, so request 2 never got a reply:\n%s", got)
+	}
+}
+
+// dyingServer answers initialize then closes its output, standing in for a
+// wrapped process that exits or crashes mid-session.
+func dyingServer(in io.Reader, out io.Writer) {
+	sc := bufio.NewScanner(in)
+	enc := json.NewEncoder(out)
+	for sc.Scan() {
+		var m struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if json.Unmarshal(sc.Bytes(), &m) != nil || len(m.ID) == 0 {
+			continue
+		}
+		if m.Method == "initialize" {
+			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(m.ID),
+				"result": map[string]any{"protocolVersion": "2025-11-25",
+					"capabilities": map[string]any{}, "serverInfo": map[string]any{"name": "w"}}})
+			continue
+		}
+		if c, ok := out.(io.Closer); ok {
+			_ = c.Close()
+		}
+		return
+	}
+}
+
+func TestServerDeathFailsInflightRequests(t *testing.T) {
+	got := drive(t, dyingServer,
+		[]map[string]any{modern(1, "tools/list")}, 900*time.Millisecond)
+
+	if !strings.Contains(got, `"id":1`) {
+		t.Fatalf("the request hung forever after the wrapped server died:\n%s", got)
+	}
+}

@@ -157,6 +157,29 @@ func (b *Bridge) pumpServer() {
 		}
 		b.writeClient(line)
 	}
+	// The wrapped server's stream has ended, so nothing will ever answer the
+	// calls still waiting. Failing them is the difference between a client
+	// seeing an error and a client hanging.
+	b.failPending("the wrapped server closed its output")
+}
+
+// failPending hands every waiting call an error and empties the table.
+func (b *Bridge) failPending(reason string) {
+	b.mu.Lock()
+	waiting := b.pending
+	b.pending = make(map[string]chan *message)
+	b.mu.Unlock()
+
+	body, err := json.Marshal(map[string]any{"code": -32603, "message": reason})
+	if err != nil {
+		return
+	}
+	for _, ch := range waiting {
+		select {
+		case ch <- &message{Error: body}:
+		default:
+		}
+	}
 }
 
 func (b *Bridge) handle(ctx context.Context, msg *message, raw []byte) {
@@ -239,6 +262,12 @@ func (b *Bridge) serveModern(ctx context.Context, msg *message) {
 func withModernMarkers(result, serverInfo json.RawMessage) []byte {
 	var obj map[string]json.RawMessage
 	if len(result) == 0 || json.Unmarshal(result, &obj) != nil {
+		return orEmptyObject(result)
+	}
+	// A JSON null decodes into a nil map without erroring, and writing to one
+	// panics. A result that is null or not an object carries nowhere to put the
+	// markers, so it goes back as it came.
+	if obj == nil {
 		return orEmptyObject(result)
 	}
 	if _, ok := obj["resultType"]; !ok {
