@@ -60,9 +60,14 @@ Reproduce with `./mutation_check.sh`.
 Every behaviour below is taken from a handler in `meshery/meshery` at current
 master, cited in `doc.go` next to the code that reproduces it.
 
-**Authentication.** The session lives in the `token` and `meshery-provider`
-cookies. `RemoteProvider.GetToken` reads `req.Cookie("token")` and nothing else,
-so an `Authorization` header is not a session. The first unauthenticated call is
+**Authentication.** The two credentials are not symmetric.
+`RemoteProvider.GetToken` reads `req.Cookie("token")` and nothing else, so an
+`Authorization` header is not a session and neither is a token on the query
+string. The provider selection has three channels: the `meshery-provider`
+cookie, else an HTTP header of the same name, else `?provider=`. The fake
+accepts all three for the provider and only the cookie for the token, and
+`AssertAuthenticated` reports which channel carried it. The first
+unauthenticated call is
 not answered with a 401 either: it is a 302 to a login page, and a client that
 follows redirects gets `200 OK` with HTML and fails inside its JSON decoder.
 `WithLocalProvider()` switches to the local provider's behaviour, which accepts

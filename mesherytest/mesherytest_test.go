@@ -103,6 +103,74 @@ func TestLocalProviderAcceptsAnything(t *testing.T) {
 	}
 }
 
+// TestProviderHasThreeChannels covers the asymmetry between the two credentials.
+// The token is read from its cookie and nowhere else, but the provider falls
+// back to a header of the same name and then to ?provider=, so a client that
+// sends the provider either of those other ways is not broken and the fake must
+// not pretend otherwise.
+func TestProviderHasThreeChannels(t *testing.T) {
+	const path = "/api/system/kubernetes/contexts"
+
+	for _, tc := range []struct {
+		channel string
+		apply   func(*http.Request, *mesherytest.Server)
+	}{
+		{"cookie", func(r *http.Request, s *mesherytest.Server) {
+			r.AddCookie(&http.Cookie{Name: "meshery-provider", Value: s.Provider})
+		}},
+		{"header", func(r *http.Request, s *mesherytest.Server) {
+			r.Header.Set("meshery-provider", s.Provider)
+		}},
+		{"query", func(r *http.Request, s *mesherytest.Server) {
+			q := r.URL.Query()
+			q.Set("provider", s.Provider)
+			r.URL.RawQuery = q.Encode()
+		}},
+	} {
+		t.Run(tc.channel, func(t *testing.T) {
+			s := mesherytest.New(t)
+			req, _ := http.NewRequest(http.MethodGet, s.URL()+path, nil)
+			req.AddCookie(&http.Cookie{Name: "token", Value: s.Token})
+			tc.apply(req, s)
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			if !strings.Contains(string(body), "minikube") {
+				t.Fatalf("provider via %s was not accepted: %s", tc.channel, body)
+			}
+
+			if _, got := s.Requests()[0].Provider(); got != tc.channel {
+				t.Errorf("recorded channel = %q, want %q", got, tc.channel)
+			}
+			s.AssertAuthenticated(t)
+		})
+	}
+}
+
+// TestTokenIsCookieOnly is the other half of that asymmetry: the provider has
+// three channels, the session has one.
+func TestTokenIsCookieOnly(t *testing.T) {
+	s := mesherytest.New(t)
+
+	req, _ := http.NewRequest(http.MethodGet, s.URL()+"/api/system/kubernetes/contexts?token="+s.Token, nil)
+	req.Header.Set("token", s.Token)
+	req.AddCookie(&http.Cookie{Name: "meshery-provider", Value: s.Provider})
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "Sign in") {
+		t.Fatalf("a token sent as a header or query param is not a session, got: %s", body)
+	}
+}
+
 // TestMissingClusterFilterReturnsNothing is the second bug. Meshery filters
 // with cluster_id IN (?), so no filter is an empty IN clause: 200, an empty
 // list, and a model that reports the cluster is empty.

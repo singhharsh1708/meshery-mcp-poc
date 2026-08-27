@@ -84,9 +84,11 @@ func (s *Server) AssertAuthenticated(t T) {
 			t.Errorf("%s %s: token cookie = %q, want %q. Meshery reads the session from cookies; RemoteProvider.GetToken looks at req.Cookie(\"token\") and nothing else, so an Authorization header is not a session",
 				r.Method, r.Path, r.Cookies["token"], s.Token)
 		}
-		if r.Cookies["meshery-provider"] != s.Provider {
-			t.Errorf("%s %s: meshery-provider cookie = %q, want %q",
-				r.Method, r.Path, r.Cookies["meshery-provider"], s.Provider)
+		// The provider has three channels, unlike the token, so this checks that
+		// one of them carried it rather than insisting on the cookie.
+		if got, channel := r.Provider(); got != s.Provider {
+			t.Errorf("%s %s: provider = %q (via %s), want %q. Meshery takes it from the meshery-provider cookie, else a header of the same name, else ?provider=",
+				r.Method, r.Path, got, orNone(channel), s.Provider)
 		}
 	}
 	if checked == 0 {
@@ -105,6 +107,13 @@ func (s *Server) AssertAuthenticated(t T) {
 // POST /api/registry/relationships/evaluate and the connection-definition
 // writes (server/router/server.go:263-289). Exempting the whole prefix would
 // let an unauthenticated write slip past this assertion.
+func orNone(s string) string {
+	if s == "" {
+		return "no channel"
+	}
+	return s
+}
+
 func isPublic(r Request) bool {
 	switch r.Path {
 	case "/api/system/version", "/provider", "/auth/login":

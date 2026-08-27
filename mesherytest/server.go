@@ -24,6 +24,9 @@ type Request struct {
 	Path    string
 	Query   url.Values
 	Cookies map[string]string
+	// Headers are keyed with net/http's canonical casing, so look one up with
+	// http.CanonicalHeaderKey rather than the wire spelling.
+	Headers map[string]string
 }
 
 // Server is a fake Meshery Server. Create one with New.
@@ -121,12 +124,17 @@ func (s *Server) record(next http.Handler) http.Handler {
 		for _, c := range r.Cookies() {
 			cookies[c.Name] = c.Value
 		}
+		headers := map[string]string{}
+		for name := range r.Header {
+			headers[name] = r.Header.Get(name)
+		}
 		s.mu.Lock()
 		s.requests = append(s.requests, Request{
 			Method:  r.Method,
 			Path:    r.URL.Path,
 			Query:   r.URL.Query(),
 			Cookies: cookies,
+			Headers: headers,
 		})
 		s.mu.Unlock()
 		next.ServeHTTP(w, r)
@@ -149,11 +157,27 @@ func (s *Server) authenticated(r *http.Request) bool {
 	if err != nil || tok.Value != s.Token {
 		return false
 	}
-	prov, err := r.Cookie("meshery-provider")
-	if err != nil || prov.Value != s.Provider {
-		return false
+	return resolveProvider(r) == s.Provider
+}
+
+// resolveProvider mirrors Meshery's provider selection precedence.
+//
+// Meshery: resolveProviderName (server/handlers/middlewares.go:56-73) takes the
+// meshery-provider cookie, else an HTTP header of the same name, else the
+// ?provider= query parameter. Note the asymmetry with the token, which
+// RemoteProvider.GetToken reads from the cookie and nowhere else: the provider
+// has three channels, the session has one.
+//
+// Not reproduced: when the PROVIDER environment variable is set on the server,
+// it wins outright and all three client hints are ignored.
+func resolveProvider(r *http.Request) string {
+	if ck, err := r.Cookie("meshery-provider"); err == nil && ck.Value != "" {
+		return ck.Value
 	}
-	return true
+	if hdr := r.Header.Get("meshery-provider"); hdr != "" {
+		return hdr
+	}
+	return r.URL.Query().Get("provider")
 }
 
 // redirectUnauthenticated reproduces the first thing Meshery does with an
@@ -179,6 +203,21 @@ func (s *Server) redirectUnauthenticated(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	http.Redirect(w, r, "/auth/login", http.StatusFound)
+}
+
+// Provider returns how the request conveyed its provider selection, and by
+// which of Meshery's three channels.
+func (r Request) Provider() (value, channel string) {
+	if v := r.Cookies["meshery-provider"]; v != "" {
+		return v, "cookie"
+	}
+	if v := r.Headers[http.CanonicalHeaderKey("meshery-provider")]; v != "" {
+		return v, "header"
+	}
+	if v := r.Query.Get("provider"); v != "" {
+		return v, "query"
+	}
+	return "", ""
 }
 
 // loginPage is what a redirect-following client actually receives: HTML with a
