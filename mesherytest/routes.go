@@ -211,11 +211,21 @@ func (s *Server) handlePatterns(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	start, end := paginate(len(filtered), page, size)
+
+	// The list endpoint serves patternFile as YAML. The by-ID endpoint serves
+	// the same field as JSON. Reproducing only one of the two would hide the
+	// trap entirely.
+	listed := make([]Design, 0, end-start)
+	for _, d := range filtered[start:end] {
+		d.PatternFile = designFileYAML
+		listed = append(listed, d)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"page":       page,
 		"pageSize":   reportedSize(size, end-start),
 		"totalCount": len(filtered),
-		"patterns":   filtered[start:end],
+		"patterns":   listed,
 	})
 }
 

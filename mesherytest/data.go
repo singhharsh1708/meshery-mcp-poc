@@ -35,6 +35,10 @@ type Connection struct {
 	Status string `json:"status"`
 }
 
+// DesignFileYAML is the YAML encoding the list endpoint serves, exposed so a
+// test can assert against the exact bytes a client would receive there.
+func DesignFileYAML() string { return designFileYAML }
+
 // Design mirrors an entry from GET /api/pattern.
 //
 // PatternFile is a JSON *string* on current Meshery, not a nested object, and
@@ -63,11 +67,44 @@ type Metadata struct {
 	Namespace string `json:"namespace"`
 }
 
+// The same design in the two encodings Meshery actually serves.
+//
+// GET /api/pattern returns patternFile as YAML and GET /api/pattern/{id}
+// returns it as JSON. Verified against a Meshery Server built from master and
+// run locally: six designs checked, all six YAML from the list and JSON by ID.
+// SaveMesheryPattern stores the design with yaml.Marshal
+// (server/models/meshery_pattern_persister.go:233), and the list path returns
+// that stored form verbatim.
+//
+// A client that reads the design out of the list response and decodes it as
+// JSON therefore fails on every design, while passing against any mock that
+// serves JSON from both. This is the one behaviour here that source reading
+// alone did not reveal.
 const designFileJSON = `{"name":"bookinfo","schemaVersion":"designs.meshery.io/v1beta1",` +
 	`"components":[` +
 	`{"id":"c1","displayName":"productpage","component":{"kind":"Deployment","version":"apps/v1"}},` +
 	`{"id":"c2","displayName":"tls-cert","component":{"kind":"Secret","version":"v1"}}],` +
 	`"relationships":[{"id":"r1","kind":"edge","subType":"network","type":"non-binding"}]}`
+
+const designFileYAML = `name: bookinfo
+schemaVersion: designs.meshery.io/v1beta1
+components:
+- id: c1
+  displayName: productpage
+  component:
+    kind: Deployment
+    version: apps/v1
+- id: c2
+  displayName: tls-cert
+  component:
+    kind: Secret
+    version: v1
+relationships:
+- id: r1
+  kind: edge
+  subType: network
+  type: non-binding
+`
 
 // SeedData returns a small dataset: one cluster, one connection, two designs
 // and four discovered resources, one of which is a Secret so that a Secret

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+
+	"sigs.k8s.io/yaml"
 )
 
 // TopologyComponent is a node in a topology graph: one component of the design
@@ -190,9 +192,13 @@ func decodeDesignFile(raw json.RawMessage) (*patternFile, error) {
 			return nil, fmt.Errorf("design file string was empty")
 		}
 		if trimmed[0] != '{' {
-			// Historically these were YAML. Say so rather than returning an
-			// empty graph that reads as a design with no components.
-			return nil, fmt.Errorf("design file is not JSON; this build cannot parse it")
+			// Meshery serves the design file as YAML, not JSON. Every design a
+			// live server returns takes this path.
+			var pf patternFile
+			if err := yaml.Unmarshal(trimmed, &pf); err != nil {
+				return nil, fmt.Errorf("design file could not be parsed as YAML: %w", err)
+			}
+			return &pf, nil
 		}
 	}
 	var pf patternFile

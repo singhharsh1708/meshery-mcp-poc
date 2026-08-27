@@ -216,9 +216,18 @@ This is a deliberately small vertical slice of the funded project: the Go REST c
 
 ## What this has and has not been tested against
 
-Verified: the MCP protocol surface, against the compiled binary over stdio with a real client; every Meshery request shape, against the handlers in `meshery/meshery` at current master; the security guarantees, red-green.
+Verified: the MCP protocol surface, against the compiled binary over stdio with a real client; the security guarantees, red-green; and **the Meshery request and response shapes against a live Meshery Server**.
 
-Not verified: behaviour against a live Meshery Server with a real cluster attached. The demo uses a mock serving the real payload shapes. Meshery ships an amd64-only image that crashes under emulation on arm64 during content seeding, so a live run has not been possible here. Worth stating plainly rather than implying more coverage than exists.
+The live run is new. Meshery publishes an amd64-only image that crashes under emulation on arm64 during content seeding, which is why this went untested for so long. Building the server from source instead works: Meshery's `go.mod` targets Go 1.26.4 and the tree compiles and runs natively on arm64.
+
+```bash
+cd meshery/server/cmd && go build -o meshery-server .
+PORT=9081 PROVIDER=Local KEYS_PATH=../../server/permissions/keys.csv ./meshery-server
+```
+
+That server seeds itself with 355 designs and 292 models, which is enough to exercise pagination and the design endpoints for real. What the live run confirmed, and what it corrected, is in [the contract notes](mesherytest/README.md).
+
+Still not verified: behaviour with a real Kubernetes cluster attached. MeshSync needs an operator in-cluster, so the cluster-scoped resource endpoints were exercised against their guards and their empty shapes, not against discovered workloads.
 
 ## License
 

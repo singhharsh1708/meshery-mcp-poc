@@ -485,6 +485,43 @@ func TestAsDesignClearsTheFlatList(t *testing.T) {
 	}
 }
 
+// TestDesignFileEncodingDiffersByEndpoint is the trap no mock reproduces,
+// because you only find it by asking a real server twice. The list endpoint
+// serves patternFile as YAML and the by-ID endpoint serves the same field as
+// JSON, so a client that reads the design out of the list response and decodes
+// it as JSON fails on every design it sees.
+func TestDesignFileEncodingDiffersByEndpoint(t *testing.T) {
+	s := mesherytest.New(t)
+
+	list := authedGet(t, s, "/api/pattern", "pagesize=1")
+	listed := list["patterns"].([]any)[0].(map[string]any)["patternFile"].(string)
+	if json.Valid([]byte(listed)) {
+		t.Error("the list endpoint should serve YAML, which is not valid JSON")
+	}
+	if !strings.HasPrefix(listed, "name: bookinfo") {
+		t.Errorf("list patternFile does not look like YAML: %q", listed[:40])
+	}
+
+	byID := authedGet(t, s, "/api/pattern/d-1001", "")
+	single := byID["patternFile"].(string)
+	if !json.Valid([]byte(single)) {
+		t.Errorf("the by-ID endpoint should serve JSON, got %q", single[:40])
+	}
+
+	// Same design, two encodings. A client decoding the list form as JSON gets
+	// nothing useful out of it.
+	var pf map[string]any
+	if err := json.Unmarshal([]byte(listed), &pf); err == nil {
+		t.Error("expected the YAML form to fail a JSON decode")
+	}
+	if err := json.Unmarshal([]byte(single), &pf); err != nil {
+		t.Fatalf("the by-ID form should decode as JSON: %v", err)
+	}
+	if pf["name"] != "bookinfo" {
+		t.Errorf("name = %v", pf["name"])
+	}
+}
+
 // TestDesignFileIsAJSONString covers the shape trap on designs. patternFile is
 // a JSON string under a camelCase key on current Meshery. Decoding it as a
 // nested object, or looking only for pattern_file, yields an empty design with

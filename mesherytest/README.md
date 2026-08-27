@@ -150,6 +150,66 @@ and same methods, so the fake serves both and the assertion exempts both. Demand
 cookies on the alias would fail a client that is doing nothing wrong, which is the
 worst thing an assertion can do.
 
+## Verified against a running Meshery
+
+Every behaviour here was read out of `meshery/meshery` at commit `e6ed2de`, and
+the ones observable from outside were then checked against a Meshery Server
+built from that same commit and run locally.
+
+Building it is the part that has stopped people. The published image is amd64
+only and dies under emulation on arm64 during content seeding. The source builds
+and runs natively, and Meshery's `go.mod` targets Go 1.26.4:
+
+```bash
+cd meshery/server/cmd && go build -o meshery-server .
+PORT=9081 PROVIDER=Local KEYS_PATH=../../server/permissions/keys.csv ./meshery-server
+```
+
+It seeds itself with 355 designs and 292 models, which is enough to exercise
+pagination and the design endpoints for real. Confirmed:
+
+```
+GET /api/system/meshsync/resources                       -> 200 {"page":0,"pageSize":25,"totalCount":0,"resources":[],"design":{...}}
+GET /api/system/meshsync/resources?clusterIds=not-json   -> 400
+GET /api/system/meshsync/resources/summary               -> 400
+GET /api/system/meshsync/resources/summary?clusterId=abc -> 200
+GET /api/environments                                    -> 400
+GET /api/workspaces                                      -> 400
+GET /api/pattern?page=0&pagesize=3                       -> first three designs
+GET /api/pattern?page=1&pagesize=3                       -> a different three
+```
+
+So the envelope is camelCase on the wire, `pageSize` and `totalCount`; both
+`resources` and `design` are always present rather than one or the other; and
+the pager really is zero-based, with `page=1` returning the second page.
+
+**The design file is YAML from the list endpoint and JSON from the by-ID
+endpoint.** Six designs checked, all six the same way:
+
+```
+design                             list   by-id
+prometheus-postgres-exporter       YAML   JSON
+Pod Resource Memory Request Limit  YAML   JSON
+Pod Liveness                       YAML   JSON
+Kubernetes Deployment with Azure   YAML   JSON
+Edge Reference Relationship        YAML   JSON
+ZooKeeper Cluster                  YAML   JSON
+```
+
+`SaveMesheryPattern` stores the design with `yaml.Marshal`
+(`server/models/meshery_pattern_persister.go:233`) and the list path returns that
+stored form verbatim. A client that reads the design out of a list response and
+decodes it as JSON fails on every design, and passes against any mock that
+serves JSON from both. This is the one behaviour here that reading the source
+did not reveal, because you only find it by asking a real server for the same
+design twice. The fake serves YAML from the list and JSON by ID, so a test can
+catch it.
+
+Not covered by the live run: anything needing a real Kubernetes cluster. MeshSync
+wants an operator in-cluster, so the cluster-scoped endpoints were exercised
+against their guards and their empty shapes rather than against discovered
+workloads.
+
 ## Assertions
 
 | Call | Catches |
