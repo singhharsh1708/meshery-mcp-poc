@@ -1,4 +1,4 @@
-package mesheryfake_test
+package mesherytest_test
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/singhharsh1708/meshery-mcp-poc/meshery"
-	"github.com/singhharsh1708/meshery-mcp-poc/mesheryfake"
+	"github.com/singhharsh1708/meshery-mcp-poc/mesherytest"
 )
 
 const resourcesPath = "/api/system/meshsync/resources"
@@ -29,7 +29,7 @@ func naiveGet(t *testing.T, base, path, query string) (int, []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Authorization", "Bearer "+mesheryfake.DefaultToken)
+	req.Header.Set("Authorization", "Bearer "+mesherytest.DefaultToken)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -40,7 +40,7 @@ func naiveGet(t *testing.T, base, path, query string) (int, []byte) {
 	return resp.StatusCode, body
 }
 
-func authedGet(t *testing.T, s *mesheryfake.Server, path, query string) map[string]any {
+func authedGet(t *testing.T, s *mesherytest.Server, path, query string) map[string]any {
 	t.Helper()
 	u := s.URL() + path
 	if query != "" {
@@ -70,7 +70,7 @@ func authedGet(t *testing.T, s *mesheryfake.Server, path, query string) map[stri
 // redirected, the redirect is followed, and the client parses an HTML login
 // page. A mock that checks the Authorization header would call this a pass.
 func TestBearerAuthLandsOnLoginPage(t *testing.T) {
-	s := mesheryfake.New(t)
+	s := mesherytest.New(t)
 
 	status, body := naiveGet(t, s.URL(), "/api/system/meshsync/resources", "")
 
@@ -91,7 +91,7 @@ func TestBearerAuthLandsOnLoginPage(t *testing.T) {
 // client with no working authentication passes every test against a locally
 // started Meshery and fails the first time it meets a remote provider.
 func TestLocalProviderAcceptsAnything(t *testing.T) {
-	s := mesheryfake.New(t, mesheryfake.WithLocalProvider())
+	s := mesherytest.New(t, mesherytest.WithLocalProvider())
 
 	status, body := naiveGet(t, s.URL(), "/api/system/kubernetes/contexts", "")
 
@@ -107,7 +107,7 @@ func TestLocalProviderAcceptsAnything(t *testing.T) {
 // with cluster_id IN (?), so no filter is an empty IN clause: 200, an empty
 // list, and a model that reports the cluster is empty.
 func TestMissingClusterFilterReturnsNothing(t *testing.T) {
-	s := mesheryfake.New(t)
+	s := mesherytest.New(t)
 
 	out := authedGet(t, s, "/api/system/meshsync/resources", "")
 	if n := out["totalCount"].(float64); n != 0 {
@@ -120,15 +120,25 @@ func TestMissingClusterFilterReturnsNothing(t *testing.T) {
 	}
 }
 
-// TestBareClusterIDIsNotAnArray covers the near miss: the parameter is present
-// and looks right, but the handler json.Unmarshals it into a []string, so an
-// unquoted id fails to parse and the filter ends up empty. Same silent zero.
-func TestBareClusterIDIsNotAnArray(t *testing.T) {
-	s := mesheryfake.New(t)
+// TestBareClusterIDIsRejected covers the near miss: the parameter is present and
+// looks right, but the handler json.Unmarshals it into a []string and answers
+// 400 when that fails. Unlike the absent case above, this one is loud, and the
+// distinction is worth reproducing exactly rather than collapsing both into an
+// empty result.
+func TestBareClusterIDIsRejected(t *testing.T) {
+	s := mesherytest.New(t)
 
-	out := authedGet(t, s, "/api/system/meshsync/resources", "clusterIds="+s.Data().ClusterID())
-	if n := out["totalCount"].(float64); n != 0 {
-		t.Fatalf("totalCount = %v, want 0: a bare id is not a JSON array", n)
+	req, _ := http.NewRequest(http.MethodGet,
+		s.URL()+"/api/system/meshsync/resources?clusterIds="+s.Data().ClusterID(), nil)
+	req.AddCookie(&http.Cookie{Name: "token", Value: s.Token})
+	req.AddCookie(&http.Cookie{Name: "meshery-provider", Value: s.Provider})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: a bare id is not a JSON array", resp.StatusCode)
 	}
 }
 
@@ -137,7 +147,7 @@ func TestBareClusterIDIsNotAnArray(t *testing.T) {
 // singular clusterId and answers 400 without one. Reusing the first spelling on
 // the second endpoint fails outright.
 func TestSummaryUsesADifferentSpelling(t *testing.T) {
-	s := mesheryfake.New(t)
+	s := mesherytest.New(t)
 	const path = "/api/system/meshsync/resources/summary"
 
 	req, _ := http.NewRequest(http.MethodGet, s.URL()+path+`?clusterIds=["`+s.Data().ClusterID()+`"]`, nil)
@@ -162,7 +172,7 @@ func TestSummaryUsesADifferentSpelling(t *testing.T) {
 // both of Meshery's offset paths, so a client that opens at page 1 misses the
 // first page of every list. With one seeded cluster, page 1 is empty.
 func TestPageOneSkipsTheFirstPage(t *testing.T) {
-	s := mesheryfake.New(t)
+	s := mesherytest.New(t)
 
 	out := authedGet(t, s, "/api/system/kubernetes/contexts", "page=1&pageSize=25")
 	if ctxs := out["contexts"].([]any); len(ctxs) != 0 {
@@ -177,12 +187,57 @@ func TestPageOneSkipsTheFirstPage(t *testing.T) {
 
 // TestLegacyPageSizeSpellingStillWorks pins the fallback, so a client using the
 // older lowercase spelling is not broken by the fake when Meshery accepts it.
+// getPaginationParams reads pageSize first and falls back to pagesize; Meshery's
+// own comment calls the first canonical and the second legacy.
 func TestLegacyPageSizeSpellingStillWorks(t *testing.T) {
-	s := mesheryfake.New(t)
+	s := mesherytest.New(t)
 
 	out := authedGet(t, s, "/api/pattern", "pagesize=1")
 	if n := len(out["patterns"].([]any)); n != 1 {
 		t.Fatalf("pagesize=1 returned %d designs, want 1", n)
+	}
+
+	// The canonical spelling wins when both are sent.
+	out = authedGet(t, s, "/api/pattern", "pageSize=2&pagesize=1")
+	if n := len(out["patterns"].([]any)); n != 2 {
+		t.Fatalf("pageSize should take precedence over pagesize, got %d designs, want 2", n)
+	}
+}
+
+// TestPageSizeAllReturnsEverything covers the value that is not a size. Meshery
+// skips the limit entirely for pageSize=all rather than falling back to the
+// default of 25, so a fake that quietly caps at 25 would hide a client bug on
+// any collection larger than a page.
+func TestPageSizeAllReturnsEverything(t *testing.T) {
+	s := mesherytest.New(t)
+
+	out := authedGet(t, s, "/api/pattern", "pageSize=all")
+	if n := len(out["patterns"].([]any)); n != 2 {
+		t.Fatalf("pageSize=all returned %d designs, want all 2", n)
+	}
+}
+
+// TestNegativePageIsClamped matches getPaginationParams, which forces a
+// negative page to 0 rather than computing a negative offset.
+func TestNegativePageIsClamped(t *testing.T) {
+	s := mesherytest.New(t)
+
+	out := authedGet(t, s, "/api/pattern", "page=-3")
+	if n := len(out["patterns"].([]any)); n != 2 {
+		t.Fatalf("page=-3 returned %d designs, want the first page", n)
+	}
+}
+
+// TestPageBeyondTheEndIsEmptyNotAPanic checks the far edge of the arithmetic.
+func TestPageBeyondTheEndIsEmptyNotAPanic(t *testing.T) {
+	s := mesherytest.New(t)
+
+	out := authedGet(t, s, "/api/pattern", "page=99&pageSize=25")
+	if n := len(out["patterns"].([]any)); n != 0 {
+		t.Fatalf("page 99 returned %d designs, want 0", n)
+	}
+	if n := out["totalCount"].(float64); n != 2 {
+		t.Fatalf("totalCount = %v, want the unpaginated total of 2", n)
 	}
 }
 
@@ -190,7 +245,7 @@ func TestLegacyPageSizeSpellingStillWorks(t *testing.T) {
 // asDesign moves the answer into a design and empties resources. A client that
 // keeps reading resources gets an empty list and no error.
 func TestAsDesignClearsTheFlatList(t *testing.T) {
-	s := mesheryfake.New(t)
+	s := mesherytest.New(t)
 
 	out := authedGet(t, s, "/api/system/meshsync/resources",
 		`asDesign=true&clusterIds=["`+s.Data().ClusterID()+`"]`)
@@ -212,7 +267,7 @@ func TestAsDesignClearsTheFlatList(t *testing.T) {
 // nested object, or looking only for pattern_file, yields an empty design with
 // no error at all.
 func TestDesignFileIsAJSONString(t *testing.T) {
-	s := mesheryfake.New(t)
+	s := mesherytest.New(t)
 
 	out := authedGet(t, s, "/api/pattern/d-1001", "")
 	raw, ok := out["patternFile"].(string)
@@ -233,7 +288,7 @@ func TestDesignFileIsAJSONString(t *testing.T) {
 
 // TestOrgScopedEndpointsRequireOrgID covers the last silent-400 family.
 func TestOrgScopedEndpointsRequireOrgID(t *testing.T) {
-	s := mesheryfake.New(t)
+	s := mesherytest.New(t)
 
 	for _, path := range []string{"/api/environments", "/api/workspaces"} {
 		req, _ := http.NewRequest(http.MethodGet, s.URL()+path, nil)
@@ -253,7 +308,7 @@ func TestOrgScopedEndpointsRequireOrgID(t *testing.T) {
 // TestRegistryIsUnauthenticated pins the one family that genuinely needs no
 // session, so a client is not made to authenticate where Meshery does not.
 func TestRegistryIsUnauthenticated(t *testing.T) {
-	s := mesheryfake.New(t)
+	s := mesherytest.New(t)
 
 	status, body := naiveGet(t, s.URL(), "/api/registry/models", "")
 	if status != http.StatusOK {
@@ -269,7 +324,7 @@ func TestRegistryIsUnauthenticated(t *testing.T) {
 // offers is applied to what it actually sent. If the assertions were vacuous,
 // this would pass with a broken client; the tests above show they are not.
 func TestRealClientSatisfiesEveryAssertion(t *testing.T) {
-	s := mesheryfake.New(t)
+	s := mesherytest.New(t)
 	c := meshery.New(s.URL(), s.Token, s.Provider)
 	ctx := context.Background()
 	cluster := s.Data().ClusterID()
@@ -367,7 +422,7 @@ func (r *recorder) Fatalf(format string, args ...any) {
 // run applies an assertion and reports whether it failed, along with the
 // message, so a test can check the message explains the trap rather than only
 // reporting a mismatch.
-func (r *recorder) run(assert func(mesheryfake.T)) (failed bool, msg string) {
+func (r *recorder) run(assert func(mesherytest.T)) (failed bool, msg string) {
 	// The result is set here rather than after assert returns, because Fatalf
 	// unwinds through this defer and never reaches the return below.
 	defer func() {
@@ -389,63 +444,63 @@ func (r *recorder) run(assert func(mesheryfake.T)) (failed bool, msg string) {
 func TestAssertionsFailOnABrokenClient(t *testing.T) {
 	cases := []struct {
 		name    string
-		drive   func(t *testing.T, s *mesheryfake.Server)
-		assert  func(s *mesheryfake.Server) func(mesheryfake.T)
+		drive   func(t *testing.T, s *mesherytest.Server)
+		assert  func(s *mesherytest.Server) func(mesherytest.T)
 		explain string
 	}{
 		{
 			name: "bearer auth instead of cookies",
-			drive: func(t *testing.T, s *mesheryfake.Server) {
+			drive: func(t *testing.T, s *mesherytest.Server) {
 				naiveGet(t, s.URL(), "/api/system/meshsync/resources", "")
 			},
-			assert:  func(s *mesheryfake.Server) func(mesheryfake.T) { return s.AssertAuthenticated },
+			assert:  func(s *mesherytest.Server) func(mesherytest.T) { return s.AssertAuthenticated },
 			explain: "Authorization header",
 		},
 		{
 			name: "no cluster filter",
-			drive: func(t *testing.T, s *mesheryfake.Server) {
+			drive: func(t *testing.T, s *mesherytest.Server) {
 				authedGet(t, s, "/api/system/meshsync/resources", "")
 			},
-			assert: func(s *mesheryfake.Server) func(mesheryfake.T) {
-				return func(tt mesheryfake.T) { s.AssertClusterScoped(tt, resourcesPath) }
+			assert: func(s *mesherytest.Server) func(mesherytest.T) {
+				return func(tt mesherytest.T) { s.AssertClusterScoped(tt, resourcesPath) }
 			},
 			explain: "empty IN clause",
 		},
 		{
 			name: "cluster id sent unquoted",
-			drive: func(t *testing.T, s *mesheryfake.Server) {
+			drive: func(t *testing.T, s *mesherytest.Server) {
 				authedGet(t, s, "/api/system/meshsync/resources", "clusterIds=ksid-9c2e")
 			},
-			assert: func(s *mesheryfake.Server) func(mesheryfake.T) {
-				return func(tt mesheryfake.T) { s.AssertClusterScoped(tt, resourcesPath) }
+			assert: func(s *mesherytest.Server) func(mesherytest.T) {
+				return func(tt mesherytest.T) { s.AssertClusterScoped(tt, resourcesPath) }
 			},
 			explain: "not a JSON array",
 		},
 		{
 			name: "summary given the plural spelling",
-			drive: func(t *testing.T, s *mesheryfake.Server) {
+			drive: func(t *testing.T, s *mesherytest.Server) {
 				authedGet(t, s, resourcesPath+"/summary", `clusterIds=["ksid-9c2e"]`)
 			},
-			assert: func(s *mesheryfake.Server) func(mesheryfake.T) {
-				return func(tt mesheryfake.T) { s.AssertClusterScoped(tt, resourcesPath+"/summary") }
+			assert: func(s *mesherytest.Server) func(mesherytest.T) {
+				return func(tt mesherytest.T) { s.AssertClusterScoped(tt, resourcesPath+"/summary") }
 			},
 			explain: "repeated singular clusterId",
 		},
 		{
 			name: "one-based paging",
-			drive: func(t *testing.T, s *mesheryfake.Server) {
+			drive: func(t *testing.T, s *mesherytest.Server) {
 				authedGet(t, s, "/api/pattern", "page=1")
 			},
-			assert: func(s *mesheryfake.Server) func(mesheryfake.T) {
-				return func(tt mesheryfake.T) { s.AssertZeroBasedPaging(tt, "/api/pattern") }
+			assert: func(s *mesherytest.Server) func(mesherytest.T) {
+				return func(tt mesherytest.T) { s.AssertZeroBasedPaging(tt, "/api/pattern") }
 			},
 			explain: "skips the first",
 		},
 		{
 			name:  "endpoint never called",
-			drive: func(t *testing.T, s *mesheryfake.Server) {},
-			assert: func(s *mesheryfake.Server) func(mesheryfake.T) {
-				return func(tt mesheryfake.T) { tt.Helper(); s.AssertCalled(tt, "/api/system/kubernetes/contexts") }
+			drive: func(t *testing.T, s *mesherytest.Server) {},
+			assert: func(s *mesherytest.Server) func(mesherytest.T) {
+				return func(tt mesherytest.T) { tt.Helper(); s.AssertCalled(tt, "/api/system/kubernetes/contexts") }
 			},
 			explain: "no request to",
 		},
@@ -453,7 +508,7 @@ func TestAssertionsFailOnABrokenClient(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := mesheryfake.New(t)
+			s := mesherytest.New(t)
 			tc.drive(t, s)
 
 			failed, msg := (&recorder{}).run(tc.assert(s))

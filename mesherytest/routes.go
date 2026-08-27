@@ -1,4 +1,4 @@
-package mesheryfake
+package mesherytest
 
 import (
 	"net/http"
@@ -83,16 +83,22 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleResources reproduces the cluster filter that fails by returning
-// nothing. Without clusterIds the real handler builds "cluster_id IN ()",
-// which matches no rows, and still answers 200.
+// handleResources reproduces the cluster filter, including the difference
+// between getting it wrong loudly and getting it wrong silently. A malformed
+// clusterIds is a 400; an absent one builds "cluster_id IN ()", matches no
+// rows, and still answers 200.
 func (s *Server) handleResources(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	page, size := pageParams(q)
-	ids, present := parseClusterIDs(q)
+	ids, filter := parseClusterIDs(q)
+
+	if filter == clusterFilterMalformed {
+		writeError(w, http.StatusBadRequest, "unable to parse request body")
+		return
+	}
 
 	var filtered []Resource
-	if present {
+	if filter == clusterFilterPresent {
 		for _, res := range s.data.Resources {
 			if !contains(ids, res.ClusterID) {
 				continue
@@ -106,7 +112,7 @@ func (s *Server) handleResources(w http.ResponseWriter, r *http.Request) {
 			filtered = append(filtered, res)
 		}
 	}
-	// present == false leaves filtered nil, which is the whole point.
+	// An absent filter leaves filtered nil, which is the whole point.
 
 	if q.Get("asDesign") == "true" {
 		s.writeAsDesign(w, page, size, filtered)

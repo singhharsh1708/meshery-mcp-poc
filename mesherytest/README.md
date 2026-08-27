@@ -1,4 +1,4 @@
-# mesheryfake
+# mesherytest
 
 A fake Meshery Server for testing Meshery clients, including MCP servers.
 
@@ -8,7 +8,7 @@ what the client sent rather than only on what came back.
 
 ```go
 func TestMyTool(t *testing.T) {
-	fake := mesheryfake.New(t)
+	fake := mesherytest.New(t)
 	client := myclient.New(fake.URL(), fake.Token, fake.Provider)
 
 	out, err := client.ListResources(ctx, fake.Data().ClusterID())
@@ -96,7 +96,7 @@ component graph instead. You get the graph or the list, never both.
 | `AssertQuery` / `AssertNoQuery` | a dropped filter; a field that should never be requested |
 | `AssertCalled` / `AssertNotCalled` | an endpoint skipped; a mutating route touched by a read-only server |
 
-Assertions take a `mesheryfake.T` interface rather than `*testing.T`, which is
+Assertions take a `mesherytest.T` interface rather than `*testing.T`, which is
 how the package's own tests check that each one fires on a client that is wrong.
 `*testing.T` satisfies it.
 

@@ -1,4 +1,4 @@
-// Package mesheryfake provides a fake Meshery Server for testing MCP tools and
+// Package mesherytest provides a fake Meshery Server for testing MCP tools and
 // clients.
 //
 // It exists because Meshery has a handful of behaviours that a hand-written
@@ -31,7 +31,7 @@
 //
 // Typical use:
 //
-//	srv := mesheryfake.New(t)
+//	srv := mesherytest.New(t)
 //	defer srv.Close()
 //	client := yourclient.New(srv.URL(), srv.Token, srv.Provider)
 //
@@ -40,4 +40,4 @@
 //	}
 //	srv.AssertAuthenticated(t)
 //	srv.AssertQuery(t, "/api/pattern", "page", "0")
-package mesheryfake
+package mesherytest

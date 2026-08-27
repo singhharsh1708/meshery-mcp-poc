@@ -1,4 +1,4 @@
-package mesheryfake
+package mesherytest
 
 // Data is the fixture set the fake serves. Field names and JSON tags follow
 // Meshery's wire format rather than anything convenient.

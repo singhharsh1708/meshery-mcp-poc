@@ -1,4 +1,4 @@
-package mesheryfake
+package mesherytest
 
 import (
 	"encoding/json"
@@ -147,7 +147,7 @@ func (s *Server) AssertClusterScoped(t T, path string, want ...string) {
 	}
 	var got []string
 	if err := json.Unmarshal([]byte(raw), &got); err != nil {
-		t.Fatalf("%s: clusterIds = %q, which is not a JSON array. The handler json.Unmarshals this value into a []string, so a bare id fails to parse and the filter ends up empty",
+		t.Fatalf("%s: clusterIds = %q, which is not a JSON array. The handler json.Unmarshals this value into a []string and answers 400 when that fails, so a bare id is rejected outright rather than filtering by it",
 			path, raw)
 	}
 	assertSameSet(t, path, "clusterIds", got, want)

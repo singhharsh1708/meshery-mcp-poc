@@ -1,4 +1,4 @@
-package mesheryfake
+package mesherytest
 
 import (
 	"encoding/json"
@@ -176,14 +176,23 @@ func loginPage(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("<!doctype html><html><body>Sign in to Meshery</body></html>"))
 }
 
+// unlimited is the page size that means "no limit", which is what Meshery does
+// for pageSize=all.
+const unlimited = -1
+
 // paginate applies Meshery's pagination arithmetic.
 //
-// Meshery: getPaginationParams computes offset = page * limit, and
-// models.Paginate does offset := page * pageSize. Both are zero-based, so
-// page=1 skips the first page. Meshery's own callers open with page := 0.
+// Meshery: getPaginationParams computes offset = page * limit
+// (server/handlers/utils.go:116), and models.Paginate does
+// offset := (page) * pageSize (server/models/persister_utils.go:10). Both are
+// zero-based, so page=1 skips the first page. Meshery's own callers open with
+// page := 0. Negative pages are clamped to 0, as getPaginationParams does.
 func paginate(total, page, pageSize int) (start, end int) {
 	if page < 0 {
 		page = 0
+	}
+	if pageSize == unlimited {
+		return 0, total
 	}
 	if pageSize <= 0 {
 		pageSize = defaultPageSize
@@ -209,8 +218,10 @@ func pageParams(q url.Values) (page, pageSize int) {
 	if sizeStr == "" {
 		sizeStr = q.Get("pagesize")
 	}
+	// Meshery's persisters special-case pageSize=all to fetch every row rather
+	// than applying a limit, so it is not a page size at all.
 	if sizeStr == "all" {
-		return page, -1
+		return page, unlimited
 	}
 	pageSize, _ = strconv.Atoi(sizeStr)
 	if pageSize <= 0 {
@@ -219,21 +230,39 @@ func pageParams(q url.Values) (page, pageSize int) {
 	return page, pageSize
 }
 
+// clusterFilter is the outcome of reading the clusterIds query parameter. The
+// three cases are genuinely different and Meshery treats them differently.
+type clusterFilter int
+
+const (
+	// clusterFilterAbsent: no clusterIds at all. Meshery sets the filter to an
+	// empty slice, so the SQL becomes "cluster_id IN ()", which matches nothing
+	// and still answers 200. This is the silent one.
+	clusterFilterAbsent clusterFilter = iota
+	// clusterFilterMalformed: present but not a JSON array. Meshery answers 400.
+	clusterFilterMalformed
+	// clusterFilterPresent: a well-formed JSON array.
+	clusterFilterPresent
+)
+
 // parseClusterIDs reads the JSON-encoded array that
-// /api/system/meshsync/resources expects, and reports whether one was present.
+// /api/system/meshsync/resources expects.
 //
-// Meshery: the handler does Query().Get("clusterIds") then json.Unmarshal into
-// a []string, and when it is absent sets the filter to an empty slice, which
-// makes the SQL "cluster_id IN ()" match nothing.
-func parseClusterIDs(q url.Values) (ids []string, present bool) {
+// Meshery: server/handlers/meshsync_handler.go:267-278 does
+// Query().Get("clusterIds"), json.Unmarshals it into a []string, answers 400 if
+// that fails, and otherwise sets filter.ClusterIds = []string{} when the
+// parameter is absent. Line 283 then builds
+// Where("kubernetes_resources.cluster_id IN (?)", filter.ClusterIds).
+func parseClusterIDs(q url.Values) ([]string, clusterFilter) {
 	raw := q.Get("clusterIds")
 	if raw == "" {
-		return nil, false
+		return nil, clusterFilterAbsent
 	}
+	var ids []string
 	if err := json.Unmarshal([]byte(raw), &ids); err != nil {
-		return nil, false
+		return nil, clusterFilterMalformed
 	}
-	return ids, true
+	return ids, clusterFilterPresent
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

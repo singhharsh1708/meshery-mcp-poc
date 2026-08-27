@@ -2,7 +2,7 @@
 # Applies each mutation to the Meshery client, runs three suites against it, and
 # reports which ones notice. Restores the client afterwards.
 #
-# Run from the repository root: ./mesheryfake/mutation_check.sh
+# Run from the repository root: ./mesherytest/mutation_check.sh
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -15,7 +15,7 @@ cp "$CLIENT" "$BACKUP"
 
 verdict() { go test "$@" >/dev/null 2>&1 && echo "passes" || echo "catches"; }
 
-printf '%-38s %-22s %-14s %s\n' "mutation" "hand-written MCP mock" "client tests" "mesheryfake"
+printf '%-38s %-22s %-14s %s\n' "mutation" "hand-written MCP mock" "client tests" "mesherytest"
 printf '%s\n' "--------------------------------------------------------------------------------------"
 
 for mutation in cluster-filter one-based-paging bearer-header; do
@@ -35,7 +35,7 @@ for mutation in cluster-filter one-based-paging bearer-header; do
   mcp=$(verdict .)
   client=$(verdict ./meshery/)
   mv "$E2E_STASH" "$E2E"
-  fake=$(verdict . ./mesheryfake/ -run 'AgainstFakeMeshery|SatisfiesEveryAssertion')
+  fake=$(verdict . ./mesherytest/ -run 'AgainstFakeMeshery|SatisfiesEveryAssertion')
 
   printf '%-38s %-22s %-14s %s\n' "$mutation" "$mcp" "$client" "$fake"
 done

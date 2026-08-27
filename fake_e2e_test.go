@@ -7,7 +7,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/singhharsh1708/meshery-mcp-poc/meshery"
-	"github.com/singhharsh1708/meshery-mcp-poc/mesheryfake"
+	"github.com/singhharsh1708/meshery-mcp-poc/mesherytest"
 )
 
 // TestMCPServerAgainstFakeMeshery drives the whole MCP surface, over the SDK's
@@ -20,7 +20,7 @@ import (
 // parts that fail silently, so a tool that gets the wire contract wrong comes
 // back empty here the way it would in production.
 func TestMCPServerAgainstFakeMeshery(t *testing.T) {
-	fake := mesheryfake.New(t)
+	fake := mesherytest.New(t)
 	cs := connectTo(t, newServer(meshery.New(fake.URL(), fake.Token, fake.Provider)))
 	ctx := context.Background()
 	cluster := fake.Data().ClusterID()
@@ -116,7 +116,7 @@ func TestMCPServerAgainstFakeMeshery(t *testing.T) {
 // server, not by filtering a response. Dropping the filter and returning every
 // other kind would look like a successful answer to the model.
 func TestSecretKindIsRefusedBeforeAnyRequest(t *testing.T) {
-	fake := mesheryfake.New(t)
+	fake := mesherytest.New(t)
 	cs := connectTo(t, newServer(meshery.New(fake.URL(), fake.Token, fake.Provider)))
 
 	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
