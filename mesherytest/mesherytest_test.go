@@ -236,6 +236,30 @@ func TestSummaryUsesADifferentSpelling(t *testing.T) {
 	}
 }
 
+// TestSummaryClusterIDIsAPresenceCheck covers the shape of the summary guard.
+// It tests that the clusterId key is present, not that it holds anything useful,
+// so an empty value or the literal "all" that the UI sends both sail past it and
+// come back 200 with a summary of nothing in particular.
+func TestSummaryClusterIDIsAPresenceCheck(t *testing.T) {
+	s := mesherytest.New(t)
+	const path = "/api/system/meshsync/resources/summary"
+
+	for _, q := range []string{"clusterId=", "clusterId=all"} {
+		out := authedGet(t, s, path, q)
+		if out["kinds"] == nil {
+			t.Errorf("%s: expected 200 with a summary, got %v", q, out)
+		}
+	}
+
+	// And the assertion still objects, because neither value names the cluster.
+	failed, _ := (&recorder{}).run(func(tt mesherytest.T) {
+		s.AssertClusterScoped(tt, path, s.Data().ClusterID())
+	})
+	if !failed {
+		t.Error("clusterId=all should not satisfy a cluster-scoping assertion")
+	}
+}
+
 // TestPageOneSkipsTheFirstPage is the third bug. Pagination is zero-based on
 // both of Meshery's offset paths, so a client that opens at page 1 misses the
 // first page of every list. With one seeded cluster, page 1 is empty.

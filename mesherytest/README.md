@@ -83,7 +83,8 @@ counter would make the fake stateful for no gain.
 
 **Cluster scoping.** `/resources` takes a JSON-encoded `clusterIds` array. Omit
 it and the handler sets the filter to an empty slice, so the SQL becomes
-`cluster_id IN ()` and you get `200 OK` with nothing. Send a bare unquoted id
+an empty slice bound into `cluster_id IN (?)`, which matches no rows, and you
+get `200 OK` with nothing. Send a bare unquoted id
 instead and `json.Unmarshal` fails, which is a 400. The silent case and the loud
 case are different, and the fake keeps them different. Its sibling
 `/resources/summary` takes a repeated singular `clusterId` and answers 400

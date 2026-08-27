@@ -337,7 +337,7 @@ type clusterFilter int
 
 const (
 	// clusterFilterAbsent: no clusterIds at all. Meshery sets the filter to an
-	// empty slice, so the SQL becomes "cluster_id IN ()", which matches nothing
+	// empty slice and binds it into cluster_id IN (?), which matches nothing
 	// and still answers 200. This is the silent one.
 	clusterFilterAbsent clusterFilter = iota
 	// clusterFilterMalformed: present but not a JSON array. Meshery answers 400.

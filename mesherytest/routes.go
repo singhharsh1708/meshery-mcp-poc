@@ -97,8 +97,8 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 
 // handleResources reproduces the cluster filter, including the difference
 // between getting it wrong loudly and getting it wrong silently. A malformed
-// clusterIds is a 400; an absent one builds "cluster_id IN ()", matches no
-// rows, and still answers 200.
+// clusterIds is a 400; an absent one binds an empty slice into
+// cluster_id IN (?), matches no rows, and still answers 200.
 func (s *Server) handleResources(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	page, size := pageParams(q, spellingFor(r.URL.Path))
