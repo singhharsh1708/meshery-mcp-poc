@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 )
@@ -43,6 +42,10 @@ type Server struct {
 	// _ and returns nil. A remote provider requires the cookies.
 	ProviderType ProviderType
 
+	// RemoteLoginURL is where an unauthenticated GET is redirected. Empty means
+	// the fake's own stand-in at RemoteLoginPath.
+	RemoteLoginURL string
+
 	data *Data
 
 	mu       sync.Mutex
@@ -75,6 +78,13 @@ func WithLocalProvider() Option {
 	return func(s *Server) { s.ProviderType = LocalProvider }
 }
 
+// WithRemoteLoginURL overrides where an unauthenticated GET is redirected. Real
+// Meshery sends it to the remote provider's own host; the fake serves a local
+// stand-in unless this says otherwise.
+func WithRemoteLoginURL(url string) Option {
+	return func(s *Server) { s.RemoteLoginURL = url }
+}
+
 // WithData replaces the seeded fixtures.
 func WithData(d *Data) Option {
 	return func(s *Server) { s.data = d }
@@ -99,6 +109,13 @@ func New(t *testing.T, opts ...Option) *Server {
 	s.httpSrv = httptest.NewServer(s.record(mux))
 	t.Cleanup(s.httpSrv.Close)
 	return s
+}
+
+func (s *Server) remoteLoginURL() string {
+	if s.RemoteLoginURL != "" {
+		return s.RemoteLoginURL
+	}
+	return RemoteLoginPath
 }
 
 // Data returns the fixtures the fake is serving, so a test can name the seeded
@@ -146,11 +163,10 @@ func (s *Server) record(next http.Handler) http.Handler {
 // authenticated reports whether the request carries the cookie pair Meshery
 // requires. Registry routes bypass this; see routes.
 //
-// Meshery: RemoteProvider.GetToken (server/models/remote_auth.go:191) reads
-// only req.Cookie(TokenCookieName), and mesheryctl sends token alongside
-// meshery-provider. No inbound route reads an Authorization header to establish
-// a session; the only Authorization headers in the tree are on Meshery's own
-// outbound calls to Grafana and Prometheus.
+// Meshery: RemoteProvider.GetToken reads req.Cookie(TokenCookieName) and
+// returns an error when it is absent, and mesheryctl sends token alongside
+// meshery-provider. Meshery does set Authorization headers, but on its own
+// outbound calls; GetToken is what an inbound request is judged by.
 func (s *Server) authenticated(r *http.Request) bool {
 	if s.ProviderType == LocalProvider {
 		return true
@@ -182,24 +198,52 @@ func resolveProvider(r *http.Request) string {
 	return r.URL.Query().Get("provider")
 }
 
-// redirectUnauthenticated reproduces the first thing Meshery does with an
-// unauthenticated API call: a 302 to a login page, which a redirect-following
-// client turns into HTML with a 200 and a failure inside its JSON decoder.
+// RemoteLoginPath is where the fake sends an unauthenticated GET, standing in
+// for the remote provider's own login page.
 //
-// Meshery: AuthMiddleware sends a failed remote-provider auth through
-// HandleUnAuthenticated (server/models/remote_provider.go:1049), which
-// redirects to /auth/login when the meshery-provider cookie is present and to
-// /provider when it is not. SessionInjectorMiddleware
-// (server/handlers/middlewares.go:221) redirects to /provider likewise.
+// Real Meshery redirects off-host here, to RemoteProviderURL + "/login", which
+// is the provider's server and not Meshery's. The fake serves the stand-in
+// itself so tests stay hermetic and do not depend on name resolution. Use
+// WithRemoteLoginURL to point it somewhere else if the off-host hop is the thing
+// under test.
+const RemoteLoginPath = "/remote-provider/login"
+
+// rejectUnauthenticated reproduces what Meshery actually does with a request
+// that fails authentication, which is not one behaviour but three, and which
+// one you get depends on whether a token cookie was sent at all.
 //
-// Deliberately not reproduced: Meshery counts attempts in a cookie and answers
-// 401 once retries reach MaxAuthRetries, which is 3
-// (server/models/remote_auth.go:39), and AuthMiddleware answers 401 outright
-// when an enforced provider key does not match
-// (server/handlers/middlewares.go:169). Neither is the case a client meets
-// first, and reproducing the retry counter would make the fake stateful for no
-// gain, so the fake always takes the redirect branch.
-func (s *Server) redirectUnauthenticated(w http.ResponseWriter, r *http.Request) {
+// No token cookie is the common case and it does not take the path most people
+// assume. RemoteProvider.GetSession returns ErrEmptySession when GetToken finds
+// no cookie, and AuthMiddleware explicitly excludes ErrEmptySession from the
+// HandleUnAuthenticated branch:
+//
+//	if !errors.Is(err, models.ErrEmptySession) && provider.GetProviderType() == models.RemoteProviderType {
+//		provider.HandleUnAuthenticated(w, req)
+//
+// so it falls through to LoginHandler instead. LoginHandler answers a non-GET
+// with a bare 404 and sends a GET to InitiateLogin, which redirects to the
+// remote provider's own login URL. Two consequences worth a test: an
+// unauthenticated GET is redirected off-host, and an unauthenticated POST looks
+// like a missing endpoint rather than a missing session.
+//
+// A token cookie that is present but not valid is the case that does reach
+// HandleUnAuthenticated, which redirects to /auth/login when the
+// meshery-provider cookie is present and to /provider when it is not.
+//
+// Deliberately not reproduced: HandleUnAuthenticated counts attempts in a cookie
+// and answers 401 once retries reach MaxAuthRetries, which is 3, and
+// AuthMiddleware answers 401 outright on an enforced-provider mismatch. Both are
+// states a client reaches only after the ones above.
+func (s *Server) rejectUnauthenticated(w http.ResponseWriter, r *http.Request) {
+	if _, err := r.Cookie("token"); err != nil {
+		// ErrEmptySession: LoginHandler, not HandleUnAuthenticated.
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		http.Redirect(w, r, s.remoteLoginURL(), http.StatusFound)
+		return
+	}
 	if _, err := r.Cookie("meshery-provider"); err != nil {
 		http.Redirect(w, r, "/provider", http.StatusFound)
 		return
@@ -288,24 +332,18 @@ const (
 // pageSizeSpelling records which spelling each endpoint the fake serves actually
 // reads, taken from the handler behind its route.
 var pageSizeSpelling = map[string]sizeSpelling{
-	"/api/system/kubernetes/contexts": lowercaseOnly,  // GetAllContexts, contexts_handler.go:30
-	"/api/pattern":                    lowercaseOnly,  // GetMesheryPatternsHandler, meshery_pattern_handler.go:698
-	"/api/environments":               lowercaseOnly,  // environments_handlers.go:70
-	"/api/workspaces":                 lowercaseOnly,  // workspace_handlers.go:103
-	"/api/identity/orgs":              lowercaseOnly,  // organization_handler.go:19
-	"/api/integrations/connections":   canonicalFirst, // connections_handlers.go:272
-	"/api/system/meshsync/resources":  canonicalFirst, // getPaginationParams, utils.go:97
-	"/api/registry":                   canonicalFirst, // getPaginationParams
+	"/api/system/kubernetes/contexts": lowercaseOnly,  // GetAllContexts
+	"/api/pattern":                    lowercaseOnly,  // GetMesheryPatternsHandler
+	"/api/integrations/connections":   canonicalFirst, // GetConnections
+	"/api/system/meshsync/resources":  canonicalFirst, // getPaginationParams
 }
 
-// spellingFor returns the page-size spelling for a path, defaulting to the
-// getPaginationParams behaviour for anything unlisted.
+// spellingFor returns the page-size spelling for a path. Only the endpoints this
+// package paginates are listed; anything else falls back to getPaginationParams,
+// which is the behaviour behind most of the server.
 func spellingFor(path string) sizeSpelling {
 	if s, ok := pageSizeSpelling[path]; ok {
 		return s
-	}
-	if strings.HasPrefix(path, "/api/registry") {
-		return canonicalFirst
 	}
 	return canonicalFirst
 }
@@ -314,6 +352,16 @@ func spellingFor(path string) sizeSpelling {
 //
 // A client that sends pageSize to an endpoint reading only pagesize gets the
 // default of 25 and no error.
+// reportedSize is the page size to echo in a response envelope. There is no
+// limit to report when the caller asked for everything, so the row count stands
+// in rather than leaking the sentinel.
+func reportedSize(pageSize, returned int) int {
+	if pageSize == unlimited {
+		return returned
+	}
+	return pageSize
+}
+
 func pageParams(q url.Values, spelling sizeSpelling) (page, pageSize int) {
 	page, _ = strconv.Atoi(q.Get("page"))
 	sizeStr := q.Get("pagesize")

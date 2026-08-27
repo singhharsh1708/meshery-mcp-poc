@@ -1,5 +1,7 @@
 package mesherytest
 
+import "fmt"
+
 // Data is the fixture set the fake serves. Field names and JSON tags follow
 // Meshery's wire format rather than anything convenient.
 type Data struct {
@@ -88,10 +90,7 @@ func SeedData() *Data {
 			Kind:   "kubernetes",
 			Status: "connected",
 		}},
-		Designs: []Design{
-			{ID: "d-1001", Name: "bookinfo", PatternFile: designFileJSON},
-			{ID: "d-1002", Name: "redis-cache", PatternFile: designFileJSON},
-		},
+		Designs: seedDesigns(),
 		Resources: []Resource{
 			{ID: "r1", Kind: "Deployment", APIVersion: "apps/v1", ClusterID: ksid,
 				Metadata: Metadata{Name: "productpage", Namespace: "payments"}},
@@ -103,6 +102,24 @@ func SeedData() *Data {
 				Metadata: Metadata{Name: "db-credentials", Namespace: "payments"}},
 		},
 	}
+}
+
+// seedDesigns returns more than one default page of designs. The count matters:
+// with 25 or fewer, "no limit" and "fell back to the default of 25" return the
+// same thing, and a test cannot tell them apart.
+func seedDesigns() []Design {
+	designs := []Design{
+		{ID: "d-1001", Name: "bookinfo", PatternFile: designFileJSON},
+		{ID: "d-1002", Name: "redis-cache", PatternFile: designFileJSON},
+	}
+	for i := 3; i <= 30; i++ {
+		designs = append(designs, Design{
+			ID:          fmt.Sprintf("d-%04d", 1000+i),
+			Name:        fmt.Sprintf("design-%02d", i),
+			PatternFile: designFileJSON,
+		})
+	}
+	return designs
 }
 
 // ClusterID returns the Kubernetes server ID of the seeded cluster, which is

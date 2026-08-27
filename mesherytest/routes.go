@@ -9,11 +9,16 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// The login page a redirect-following client lands on.
 	mux.HandleFunc("/provider", loginPage)
 	mux.HandleFunc("/auth/login", loginPage)
+	mux.HandleFunc(RemoteLoginPath, loginPage)
 
 	// Unauthenticated by design, matching Meshery.
 	mux.HandleFunc("/api/system/version", s.handleVersion)
-	mux.HandleFunc("/api/registry/", s.handleRegistry)
-	mux.HandleFunc("/api/registry", s.handleRegistry)
+	// registerRegistryRoute binds every registry subpath at both prefixes, with
+	// the same handler and the same methods, so the alias is not optional.
+	for _, prefix := range []string{"/api/registry", "/api/meshmodels"} {
+		mux.HandleFunc(prefix, s.handleRegistry)
+		mux.HandleFunc(prefix+"/", s.handleRegistry)
+	}
 
 	mux.HandleFunc("/api/system/kubernetes/contexts", s.guard(s.handleContexts))
 	mux.HandleFunc("/api/integrations/connections", s.guard(s.handleConnections))
@@ -30,7 +35,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 func (s *Server) guard(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.authenticated(r) {
-			s.redirectUnauthenticated(w, r)
+			s.rejectUnauthenticated(w, r)
 			return
 		}
 		h(w, r)
@@ -45,16 +50,12 @@ func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// handleRegistry stands in for the /api/registry family. Reads are NoAuth;
-// writes are not. Meshery registers every registry GET with models.NoAuth, but
-// POST /register, DELETE /models/{id}, POST /relationships/evaluate and the
-// connection-definition writes with models.ProviderAuth
-// (server/router/server.go:263-289), so a read-only client that only ever GETs
-// here needs no session, and one that writes does.
+// handleRegistry stands in for the registry family, served at both /api/registry
+// and the deprecated /api/meshmodels alias. Reads are NoAuth; writes are not.
 func (s *Server) handleRegistry(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		if !s.authenticated(r) {
-			s.redirectUnauthenticated(w, r)
+			s.rejectUnauthenticated(w, r)
 			return
 		}
 	}
@@ -69,7 +70,7 @@ func (s *Server) handleContexts(w http.ResponseWriter, r *http.Request) {
 	start, end := paginate(total, page, size)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"page":       page,
-		"pageSize":   size,
+		"pageSize":   reportedSize(size, end-start),
 		"totalCount": total,
 		"contexts":   s.data.Contexts[start:end],
 	})
@@ -89,7 +90,7 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 	start, end := paginate(len(filtered), page, size)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"page":        page,
-		"pageSize":    size,
+		"pageSize":    reportedSize(size, end-start),
 		"totalCount":  len(filtered),
 		"connections": filtered[start:end],
 	})
@@ -134,7 +135,7 @@ func (s *Server) handleResources(w http.ResponseWriter, r *http.Request) {
 	start, end := paginate(len(filtered), page, size)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"page":       page,
-		"pageSize":   size,
+		"pageSize":   reportedSize(size, end-start),
 		"totalCount": len(filtered),
 		"resources":  filtered[start:end],
 	})
@@ -165,9 +166,9 @@ func (s *Server) writeAsDesign(w http.ResponseWriter, page, size int, res []Reso
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"page":       page,
-		"pageSize":   size,
+		"pageSize":   reportedSize(size, len(res)),
 		"totalCount": len(res),
-		"resources":  []Resource{}, // cleared, as the real handler does
+		"resources":  []Resource{}, // emptied, as the real handler does
 		"design": map[string]any{
 			"name":          "cluster",
 			"schemaVersion": "designs.meshery.io/v1beta1",
@@ -212,7 +213,7 @@ func (s *Server) handlePatterns(w http.ResponseWriter, r *http.Request) {
 	start, end := paginate(len(filtered), page, size)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"page":       page,
-		"pageSize":   size,
+		"pageSize":   reportedSize(size, end-start),
 		"totalCount": len(filtered),
 		"patterns":   filtered[start:end],
 	})

@@ -100,26 +100,34 @@ func (s *Server) AssertAuthenticated(t T) {
 // without a session, so AssertAuthenticated does not demand cookies where
 // Meshery does not.
 //
-// The registry is a mix rather than a blanket exemption: every GET under
-// /api/registry is registered with models.NoAuth, but several mutating routes
-// are registered with models.ProviderAuth and do require a session, among them
-// POST /api/registry/register, DELETE /api/registry/models/{id},
-// POST /api/registry/relationships/evaluate and the connection-definition
-// writes (server/router/server.go:263-289). Exempting the whole prefix would
-// let an unauthenticated write slip past this assertion.
+// The registry is a mix rather than a blanket exemption: every GET is registered
+// with models.NoAuth, but several mutating routes are registered with
+// models.ProviderAuth and do require a session, among them POST /register,
+// DELETE /models/{id}, POST /relationships/evaluate and the connection-definition
+// writes. Exempting the whole prefix would let an unauthenticated write slip past
+// this assertion.
+//
+// Both prefixes count. registerRegistryRoute binds every registry subpath at
+// /api/registry and again at the deprecated /api/meshmodels alias, with the same
+// handler and the same methods, so demanding cookies on the alias would fail a
+// client that is correct.
+func isPublic(r Request) bool {
+	switch r.Path {
+	case "/api/system/version", "/provider", "/auth/login", RemoteLoginPath:
+		return true
+	}
+	if r.Method != http.MethodGet {
+		return false
+	}
+	return strings.HasPrefix(r.Path, "/api/registry") ||
+		strings.HasPrefix(r.Path, "/api/meshmodels")
+}
+
 func orNone(s string) string {
 	if s == "" {
 		return "no channel"
 	}
 	return s
-}
-
-func isPublic(r Request) bool {
-	switch r.Path {
-	case "/api/system/version", "/provider", "/auth/login":
-		return true
-	}
-	return r.Method == http.MethodGet && strings.HasPrefix(r.Path, "/api/registry")
 }
 
 // AssertQuery fails unless the last request to path carried key=want.

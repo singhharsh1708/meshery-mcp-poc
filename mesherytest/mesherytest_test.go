@@ -70,6 +70,11 @@ func authedGet(t *testing.T, s *mesherytest.Server, path, query string) map[stri
 // token is not a Meshery session, and the failure is not a 401: the request is
 // redirected, the redirect is followed, and the client parses an HTML login
 // page. A mock that checks the Authorization header would call this a pass.
+//
+// Note where the redirect goes. With no token cookie, GetSession returns
+// ErrEmptySession, which AuthMiddleware excludes from HandleUnAuthenticated, so
+// the request lands in LoginHandler and is sent to the remote provider's own
+// login page rather than to anything on Meshery.
 func TestBearerAuthLandsOnLoginPage(t *testing.T) {
 	s := mesherytest.New(t)
 
@@ -169,6 +174,68 @@ func TestTokenIsCookieOnly(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "Sign in") {
 		t.Fatalf("a token sent as a header or query param is not a session, got: %s", body)
+	}
+}
+
+// TestUnauthenticatedNonGetIs404 covers the half of the empty-session path that
+// is not a redirect at all. LoginHandler answers a non-GET with a bare 404, so a
+// client whose session has not been established sees what looks like a missing
+// route.
+func TestUnauthenticatedNonGetIs404(t *testing.T) {
+	s := mesherytest.New(t)
+
+	for _, method := range []string{http.MethodPost, http.MethodDelete, http.MethodPut} {
+		req, _ := http.NewRequest(method, s.URL()+"/api/pattern", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s with no session: status = %d, want 404", method, resp.StatusCode)
+		}
+	}
+}
+
+// TestInvalidTokenTakesTheOtherPath separates the two rejection routes. A token
+// cookie that is present but wrong does reach HandleUnAuthenticated, which stays
+// on Meshery and redirects to /auth/login or /provider depending on whether the
+// provider cookie is there.
+func TestInvalidTokenTakesTheOtherPath(t *testing.T) {
+	s := mesherytest.New(t)
+
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+
+	for _, tc := range []struct{ provider, want string }{
+		{"Meshery", "/auth/login"},
+		{"", "/provider"},
+	} {
+		req, _ := http.NewRequest(http.MethodGet, s.URL()+"/api/pattern", nil)
+		req.AddCookie(&http.Cookie{Name: "token", Value: "stale-or-expired"})
+		if tc.provider != "" {
+			req.AddCookie(&http.Cookie{Name: "meshery-provider", Value: tc.provider})
+		}
+		resp, err := noRedirect.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if got := resp.Header.Get("Location"); got != tc.want {
+			t.Errorf("provider=%q: redirected to %q, want %q", tc.provider, got, tc.want)
+		}
+	}
+
+	// And with no token cookie at all it goes to the provider's own login page.
+	req, _ := http.NewRequest(http.MethodGet, s.URL()+"/api/pattern", nil)
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got := resp.Header.Get("Location"); got != mesherytest.RemoteLoginPath {
+		t.Errorf("with no token: redirected to %q, want %q", got, mesherytest.RemoteLoginPath)
 	}
 }
 
@@ -293,8 +360,8 @@ func TestPageSizeSpellingIsPerEndpoint(t *testing.T) {
 		t.Errorf("lowercase pagesize=1 returned %d designs, want 1", n)
 	}
 	out = authedGet(t, s, "/api/pattern", "pageSize=1")
-	if n := len(out["patterns"].([]any)); n != 2 {
-		t.Errorf("camelCase pageSize=1 returned %d designs, want 2: this endpoint ignores that spelling and applies its default", n)
+	if n := len(out["patterns"].([]any)); n != 25 {
+		t.Errorf("camelCase pageSize=1 returned %d designs, want the default of 25: this endpoint ignores that spelling", n)
 	}
 
 	// /api/system/meshsync/resources goes through getPaginationParams, which
@@ -335,15 +402,36 @@ func TestAssertPageSizeSpellingCatchesTheWrongOne(t *testing.T) {
 }
 
 // TestPageSizeAllReturnsEverything covers the value that is not a size. Meshery
-// skips the limit entirely for pageSize=all rather than falling back to the
-// default of 25, so a fake that quietly caps at 25 would hide a client bug on
-// any collection larger than a page.
+// skips the limit entirely for all rather than falling back to the default of
+// 25, so a fake that quietly capped at 25 would hide a client bug on any
+// collection larger than a page.
+//
+// The spelling and the fixture size both matter here. /api/pattern reads only
+// the lowercase pagesize, so sending pageSize=all would never reach the branch
+// under test, and with 25 or fewer designs "no limit" and "defaulted to 25"
+// return the same thing.
 func TestPageSizeAllReturnsEverything(t *testing.T) {
 	s := mesherytest.New(t)
+	total := len(s.Data().Designs)
+	if total <= 25 {
+		t.Fatalf("fixture has %d designs; the test cannot distinguish no-limit from the default below 26", total)
+	}
 
-	out := authedGet(t, s, "/api/pattern", "pageSize=all")
-	if n := len(out["patterns"].([]any)); n != 2 {
-		t.Fatalf("pageSize=all returned %d designs, want all 2", n)
+	out := authedGet(t, s, "/api/pattern", "pagesize=all")
+	if n := len(out["patterns"].([]any)); n != total {
+		t.Fatalf("pagesize=all returned %d designs, want all %d", n, total)
+	}
+
+	// The default really is 25, so the assertion above is not vacuous.
+	out = authedGet(t, s, "/api/pattern", "")
+	if n := len(out["patterns"].([]any)); n != 25 {
+		t.Fatalf("no page size returned %d designs, want the default of 25", n)
+	}
+
+	// And the envelope reports a real size rather than the no-limit sentinel.
+	out = authedGet(t, s, "/api/pattern", "pagesize=all")
+	if got := out["pageSize"].(float64); got != float64(total) {
+		t.Errorf("pageSize = %v with no limit, want the row count %d", got, total)
 	}
 }
 
@@ -352,9 +440,12 @@ func TestPageSizeAllReturnsEverything(t *testing.T) {
 func TestNegativePageIsClamped(t *testing.T) {
 	s := mesherytest.New(t)
 
-	out := authedGet(t, s, "/api/pattern", "page=-3")
+	out := authedGet(t, s, "/api/pattern", "page=-3&pagesize=2")
 	if n := len(out["patterns"].([]any)); n != 2 {
-		t.Fatalf("page=-3 returned %d designs, want the first page", n)
+		t.Fatalf("page=-3 returned %d designs, want the first page of 2", n)
+	}
+	if out["patterns"].([]any)[0].(map[string]any)["id"] != "d-1001" {
+		t.Error("page=-3 should have been clamped to the first page")
 	}
 }
 
@@ -362,12 +453,13 @@ func TestNegativePageIsClamped(t *testing.T) {
 func TestPageBeyondTheEndIsEmptyNotAPanic(t *testing.T) {
 	s := mesherytest.New(t)
 
-	out := authedGet(t, s, "/api/pattern", "page=99&pageSize=25")
+	total := len(s.Data().Designs)
+	out := authedGet(t, s, "/api/pattern", "page=99&pagesize=25")
 	if n := len(out["patterns"].([]any)); n != 0 {
 		t.Fatalf("page 99 returned %d designs, want 0", n)
 	}
-	if n := out["totalCount"].(float64); n != 2 {
-		t.Fatalf("totalCount = %v, want the unpaginated total of 2", n)
+	if n := out["totalCount"].(float64); n != float64(total) {
+		t.Fatalf("totalCount = %v, want the unpaginated total of %d", n, total)
 	}
 }
 
@@ -462,9 +554,10 @@ func TestRegistryWritesStillNeedASession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "Sign in") {
-		t.Fatalf("an unauthenticated registry write should have been redirected to login, got: %s", body)
+	// LoginHandler answers a non-GET with a bare 404, so an unauthenticated
+	// write reads as a missing endpoint rather than a missing session.
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for an unauthenticated registry write", resp.StatusCode)
 	}
 
 	// And the assertion notices, rather than treating the prefix as exempt.

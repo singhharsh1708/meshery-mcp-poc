@@ -8,9 +8,12 @@
 // code is wrong about Meshery: the test passes, and the same code returns
 // nothing against a real instance.
 //
-// Every behaviour below was verified against meshery/meshery at master and is
-// cited at the code that reproduces it. Where Meshery's behaviour is narrower
-// than a tidy rule would suggest, the narrow version is what is reproduced.
+// Every behaviour below was verified against meshery/meshery at commit
+// e6ed2de164b42d805b78dd1cdb3c4b415e8686eb and is cited at the code that
+// reproduces it. Line numbers are given against that commit and will drift;
+// the function names are the durable part. Where Meshery's behaviour is
+// narrower than a tidy rule would suggest, the narrow version is what is
+// reproduced, and the difference is written down rather than smoothed over.
 //
 // Pagination
 //
@@ -21,10 +24,13 @@
 //   - Negative pages are clamped to 0, and the default page size is 25.
 //   - pageSize=all skips the limit entirely rather than falling back to 25.
 //   - The page-size parameter is spelled differently per endpoint, silently.
-//     Only getPaginationParams and GetConnections read the camelCase pageSize
-//     and fall back to pagesize. Most handlers read q.Get("pagesize") and
-//     nothing else, so pageSize is ignored there and the default applies. The
-//     fake models this per endpoint; see pageSizeSpelling in server.go.
+//     Of the endpoints this package serves, the contexts and designs handlers
+//     read q.Get("pagesize") and ignore pageSize, while getPaginationParams and
+//     GetConnections read pageSize and fall back to pagesize. Elsewhere in the
+//     tree there are at least two more spellings: FetchSmiResult reads only
+//     pageSize, and the credentials handler reads page_size. The fake models
+//     the endpoints it serves; see pageSizeSpelling in server.go. Sending the
+//     lowercase spelling is safe on every endpoint the fake serves.
 //
 // Cluster scoping
 //
@@ -51,12 +57,22 @@
 //     resolved from the meshery-provider cookie, else a header of the same name,
 //     else ?provider= (server/handlers/middlewares.go:64-71).
 //   - No inbound route reads an Authorization header to establish a session.
-//   - The first unauthenticated call is redirected, not refused:
-//     HandleUnAuthenticated (server/models/remote_provider.go:1049) sends a 302
-//     to /auth/login or /provider, so a client that follows redirects gets 200
-//     with HTML and fails in its JSON decoder rather than reporting an auth
-//     problem. Deliberately not reproduced: Meshery counts attempts in a cookie
-//     and answers 401 once retries reach MaxAuthRetries, which is 3
+//   - Failing authentication is not one behaviour but three, and which one you
+//     get depends on whether a token cookie was sent. With none,
+//     RemoteProvider.GetSession returns ErrEmptySession, which AuthMiddleware
+//     explicitly excludes from the HandleUnAuthenticated branch
+//     (server/handlers/middlewares.go:174), so the request falls through to
+//     LoginHandler: a non-GET gets a bare 404
+//     (server/handlers/common_handlers.go:19), and a GET is redirected
+//     off-host to the remote provider's own login URL
+//     (server/models/remote_provider.go:685). A token that is present but
+//     invalid is the case that does reach HandleUnAuthenticated
+//     (server/models/remote_provider.go:1049), which redirects to /auth/login
+//     when the meshery-provider cookie is present and to /provider when it is
+//     not. Either way a redirect-following client gets 200 with HTML and fails
+//     in its JSON decoder rather than reporting an auth problem.
+//     Deliberately not reproduced: HandleUnAuthenticated counts attempts in a
+//     cookie and answers 401 once retries reach MaxAuthRetries, which is 3
 //     (server/models/remote_auth.go:39), and AuthMiddleware answers 401 outright
 //     on an enforced-provider mismatch (server/handlers/middlewares.go:169).
 //   - DefaultLocalProvider.GetSession (server/models/default_local_provider.go:482)
@@ -82,15 +98,19 @@
 //
 //   - /api/environments answers 400 without orgId. /api/workspaces answers 400
 //     only when both orgId and the legacy orgID are absent.
-//   - Registry auth is a mix. Every GET under /api/registry is registered with
-//     models.NoAuth, but several writes are registered with models.ProviderAuth,
-//     among them POST /api/registry/register, DELETE /api/registry/models/{id}
-//     and POST /api/registry/relationships/evaluate
-//     (server/router/server.go:263-289).
-//   - List envelopes are camelCase (page, pageSize, totalCount). The exception
-//     is /api/identity/orgs, whose custom MarshalJSON
+//   - Registry auth is a mix. Every GET is registered with models.NoAuth, but
+//     several writes are registered with models.ProviderAuth, among them
+//     POST /register, DELETE /models/{id} and POST /relationships/evaluate.
+//     registerRegistryRoute (server/router/server.go:24) binds every registry
+//     subpath at /api/registry and again at the deprecated /api/meshmodels
+//     alias, same handler and same methods, so a client using the alias is not
+//     doing anything wrong.
+//   - List envelopes on the data endpoints are camelCase (page, pageSize,
+//     totalCount). /api/identity/orgs is different: its custom MarshalJSON
 //     (server/models/organization.go:31-42) emits both spellings during a
-//     deprecation window.
+//     deprecation window. The environments and workspaces responses are proxied
+//     from the provider rather than built by Meshery, so their envelope is not
+//     modelled here beyond the orgId guard those two stubs exist to demonstrate.
 //
 // Typical use:
 //
