@@ -22,16 +22,18 @@ func TestMyTool(t *testing.T) {
 
 ## Why
 
-Meshery has several endpoints that answer a wrong request with `200 OK` and an
-empty body. `GET /api/system/meshsync/resources` filters with `cluster_id IN
-(?)`, so a missing filter is an empty `IN` clause and the cluster reads as
-empty. Pagination is zero-based on both of Meshery's offset paths, so a client
-that opens at page 1 skips the first page of every list. Neither produces an
-error, and an AI client presents both as an answer.
+Meshery has several endpoints that answer a wrong request with `200 OK` and
+nothing in it. `GET /api/system/meshsync/resources` filters with
+`cluster_id IN (?)`, so a missing filter binds an empty slice and the cluster
+reads as empty. Pagination is zero-based on both of Meshery's offset paths, so a
+client that opens at page 1 skips the first page of every list. Most handlers
+read only the lowercase `pagesize` and ignore `pageSize` without saying so. None
+of these produce an error, and an AI client presents every one of them as an
+answer.
 
-A hand-written mock cannot catch either, because it returns the shape the code
-under test expects. The mock agrees with the code, including where the code is
-wrong about Meshery. The test passes, the reviewer sees green, and the failure
+A hand-written mock cannot catch any of them, because it returns the shape the
+code under test expects. The mock agrees with the code, including where the code
+is wrong about Meshery. The test passes, the reviewer sees green, and the failure
 shows up the first time someone points the thing at a real server.
 
 ## What this is measured against
@@ -67,10 +69,11 @@ master, cited in `doc.go` next to the code that reproduces it.
 string. The provider selection has three channels: the `meshery-provider`
 cookie, else an HTTP header of the same name, else `?provider=`. The fake
 accepts all three for the provider and only the cookie for the token, and
-`AssertAuthenticated` reports which channel carried it. The first
-unauthenticated call is
-not answered with a 401 either: it is a 302 to a login page, and a client that
-follows redirects gets `200 OK` with HTML and fails inside its JSON decoder.
+`AssertAuthenticated` reports which channel carried it.
+
+The first unauthenticated call is not answered with a 401 either: it is a 302 to
+a login page, and a client that follows redirects gets `200 OK` with HTML and
+fails inside its JSON decoder.
 `WithLocalProvider()` switches to the local provider's behaviour, which accepts
 everything, because that is why a client with broken auth can pass its whole
 suite against a locally started Meshery and fail against a remote one.
@@ -82,10 +85,9 @@ does not match. Neither is what a client meets first, and reproducing the retry
 counter would make the fake stateful for no gain.
 
 **Cluster scoping.** `/resources` takes a JSON-encoded `clusterIds` array. Omit
-it and the handler sets the filter to an empty slice, so the SQL becomes
-an empty slice bound into `cluster_id IN (?)`, which matches no rows, and you
-get `200 OK` with nothing. Send a bare unquoted id
-instead and `json.Unmarshal` fails, which is a 400. The silent case and the loud
+it and the handler binds an empty slice into `cluster_id IN (?)`, which matches
+no rows, so you get `200 OK` with nothing. Send a bare unquoted id instead and
+`json.Unmarshal` fails, which is a 400. The silent case and the loud
 case are different, and the fake keeps them different. Its sibling
 `/resources/summary` takes a repeated singular `clusterId` and answers 400
 without it, so the two spellings are not interchangeable either.
@@ -108,11 +110,15 @@ mock hides this. `AssertPageSizeSpelling` names the spelling that endpoint reads
 as a nested object, or reading only the older `pattern_file`, yields an empty
 design and no error.
 
-**Topology.** `?asDesign=true` clears the flat `resources` list and returns a
-component graph instead. You get the graph or the list, never both.
+**Topology.** `?asDesign=true` empties the flat `resources` list and returns a
+component graph instead, so the two are never both populated. Evaluation runs at
+depth 1 and falls back to the un-evaluated design on failure while still
+answering 200, which means an empty `relationships` array does not distinguish
+"no edges" from "evaluation failed".
 
-**Org scoping.** `/api/environments` and `/api/workspaces` answer 400 without an
-`orgId`.
+**Org scoping.** `/api/environments` answers 400 without an `orgId`, and
+`/api/workspaces` answers 400 only when both `orgId` and the legacy `orgID` are
+absent.
 
 **Registry auth is a mix, not a blanket.** Every `GET` under `/api/registry` is
 registered with `models.NoAuth` and needs no session, which is why a read-only
@@ -127,7 +133,7 @@ exempting the whole prefix would let an unauthenticated write through.
 
 | Call | Catches |
 |---|---|
-| `AssertAuthenticated` | header auth, missing provider cookie |
+| `AssertAuthenticated` | header auth, a token off the cookie, no provider on any channel |
 | `AssertClusterScoped` | absent filter, bare id where an array is required, wrong spelling per endpoint |
 | `AssertZeroBasedPaging` | a client that opens at page 1 |
 | `AssertPageSizeSpelling` | `pageSize` sent where only `pagesize` is read |
@@ -140,6 +146,5 @@ how the package's own tests check that each one fires on a client that is wrong.
 
 ## Status
 
-Written for [meshery-extensions/meshery-mcp-server](https://github.com/meshery-extensions/meshery-mcp-server)
-and kept here until there is somewhere upstream to put it. Apache 2.0, matching
+Stdlib-only, so it lifts into another repository as-is. Apache 2.0, matching
 Meshery.
