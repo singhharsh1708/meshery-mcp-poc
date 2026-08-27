@@ -159,7 +159,7 @@ npx @modelcontextprotocol/inspector ./meshery-mcp-poc
 go test ./... -race
 ```
 
-33 tests, 73.6% coverage on the server package and 80.7% on the Meshery client. Every guarantee below has a test that fails if it stops holding, verified red-green rather than assumed:
+62 tests, 77.0% coverage on the server package, 80.7% on the Meshery client and 89.1% on `mesheryfake`. Every guarantee below has a test that fails if it stops holding, verified red-green rather than assumed:
 
 | Guarantee | What breaks without it |
 |---|---|
@@ -172,7 +172,30 @@ go test ./... -race
 
 Unit tests cover request paths, cookie auth, response parsing, and Secret exclusion on every path that returns resources or components, including both topology paths (`meshery/client_test.go`, `meshery/topology_test.go`). They also assert positive controls on the query itself, so a dropped `namespace`, `clusterIds` or `asDesign` parameter fails the build rather than passing silently, and that `spec`/`status`/`labels`/`annotations` are never requested.
 
-End-to-end tests (`server_test.go`, `resources_test.go`, `prompts_test.go`) wire the MCP server to a client over the SDK's in-memory transport and drive it against a mock Meshery, covering the tools, the templated resources, subscriptions and the prompts.
+End-to-end tests (`server_test.go`, `resources_test.go`, `prompts_test.go`) wire the MCP server to a client over the SDK's in-memory transport and drive it against a mock Meshery, covering the tools, the templated resources, subscriptions and the prompts. `fake_e2e_test.go` runs the same surface against [`mesheryfake`](mesheryfake/) instead, and then asserts on what reached Meshery.
+
+## mesheryfake
+
+[`mesheryfake`](mesheryfake/) is a fake Meshery Server for testing Meshery clients, written to be lifted out of this repository. It reproduces the real API's behaviour on the endpoints an MCP server reads, including the several that answer a wrong request with `200 OK` and nothing in it, and lets a test assert on the request the client sent rather than only on the response it got back.
+
+```go
+fake := mesheryfake.New(t)
+client := myclient.New(fake.URL(), fake.Token, fake.Provider)
+// ... drive the client ...
+fake.AssertAuthenticated(t)
+fake.AssertClusterScoped(t, "/api/system/meshsync/resources", fake.Data().ClusterID())
+fake.AssertZeroBasedPaging(t, "/api/pattern")
+```
+
+A hand-written mock returns the shape the code under test expects, so it agrees with the code even where the code is wrong about Meshery. `./mesheryfake/mutation_check.sh` measures the difference: it breaks this repository's Meshery client three ways and reports which suites notice.
+
+| Mutation applied to the client | Hand-written MCP mock | Client tests | `mesheryfake` |
+|---|---|---|---|
+| cluster filter dropped from the query | passes | catches | catches |
+| pages requested one-based | passes | passes | catches |
+| bearer header instead of the cookies | passes | catches | catches |
+
+The middle row is the one that matters. Meshery's pagination is zero-based on both of its offset paths, so a client that opens at page 1 skips the first page of every list it reads, and nothing in a suite written without prior knowledge of that catches it. The other two rows are caught by a client test only because a positive control for that exact query was hand-written after the bug had already been found the hard way. The package turns each of those controls into one line, so the next author does not have to know the trap first.
 
 ## Topology
 
