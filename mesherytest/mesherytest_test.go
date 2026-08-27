@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/singhharsh1708/meshery-mcp-poc/meshery"
@@ -676,5 +677,63 @@ func TestAssertionsFailOnABrokenClient(t *testing.T) {
 				t.Errorf("failure message should explain the trap, wanted %q in:\n%s", tc.explain, msg)
 			}
 		})
+	}
+}
+
+// The tests below cover the fake's own robustness rather than Meshery's
+// behaviour. A test helper that panics, races or leaks is worse than no helper,
+// because it fails in someone else's suite and looks like their bug.
+
+// TestDoubleCloseIsSafe checks the exported Close composes with the t.Cleanup
+// that New already registers, so calling it explicitly is not a trap.
+func TestDoubleCloseIsSafe(t *testing.T) {
+	s := mesherytest.New(t)
+	s.Close()
+	s.Close()
+}
+
+// TestConcurrentUse drives the fake from many goroutines while reading the
+// recorded requests, which is the shape a parallel suite produces.
+func TestConcurrentUse(t *testing.T) {
+	s := mesherytest.New(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			authedGet(t, s, "/api/pattern", "")
+			_ = s.Requests()
+			_ = s.Data().ClusterID()
+		}()
+	}
+	wg.Wait()
+	if n := len(s.Requests()); n != 20 {
+		t.Fatalf("recorded %d requests, want 20", n)
+	}
+}
+
+// TestGarbagePaginationDoesNotPanic feeds the pagination arithmetic values a
+// confused client might send. None of them should reach a slice bounds panic.
+func TestGarbagePaginationDoesNotPanic(t *testing.T) {
+	s := mesherytest.New(t)
+	for _, q := range []string{
+		"page=abc&pagesize=xyz",
+		"page=999999999999999999999",
+		"pagesize=-5",
+		"page=&pagesize=",
+		"pagesize=0",
+		"page=2147483647&pagesize=2147483647",
+	} {
+		req, _ := http.NewRequest(http.MethodGet, s.URL()+"/api/pattern?"+q, nil)
+		req.AddCookie(&http.Cookie{Name: "token", Value: s.Token})
+		req.AddCookie(&http.Cookie{Name: "meshery-provider", Value: s.Provider})
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode >= 500 {
+			t.Errorf("%s: status %d", q, resp.StatusCode)
+		}
 	}
 }

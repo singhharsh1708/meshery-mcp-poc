@@ -10,7 +10,8 @@ CLIENT=meshery/client.go
 BACKUP=$(mktemp)
 E2E=fake_e2e_test.go
 E2E_STASH=$(mktemp -d)/$E2E
-trap 'cp "$BACKUP" "$CLIENT"; [ -f "$E2E_STASH" ] && mv "$E2E_STASH" "$E2E"; rm -f "$BACKUP"' EXIT
+restore() { cp "$BACKUP" "$CLIENT"; [ -f "$E2E_STASH" ] && mv "$E2E_STASH" "$E2E"; rm -f "$BACKUP"; }
+trap restore EXIT INT TERM
 cp "$CLIENT" "$BACKUP"
 
 verdict() { go test "$@" >/dev/null 2>&1 && echo "passes" || echo "catches"; }
