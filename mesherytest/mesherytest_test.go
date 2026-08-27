@@ -2,6 +2,7 @@ package mesherytest_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -177,26 +178,6 @@ func TestTokenIsCookieOnly(t *testing.T) {
 	}
 }
 
-// TestUnauthenticatedNonGetIs404 covers the half of the empty-session path that
-// is not a redirect at all. LoginHandler answers a non-GET with a bare 404, so a
-// client whose session has not been established sees what looks like a missing
-// route.
-func TestUnauthenticatedNonGetIs404(t *testing.T) {
-	s := mesherytest.New(t)
-
-	for _, method := range []string{http.MethodPost, http.MethodDelete, http.MethodPut} {
-		req, _ := http.NewRequest(method, s.URL()+"/api/pattern", nil)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusNotFound {
-			t.Errorf("%s with no session: status = %d, want 404", method, resp.StatusCode)
-		}
-	}
-}
-
 // TestInvalidTokenTakesTheOtherPath separates the two rejection routes. A token
 // cookie that is present but wrong does reach HandleUnAuthenticated, which stays
 // on Meshery and redirects to /auth/login or /provider depending on whether the
@@ -208,34 +189,82 @@ func TestInvalidTokenTakesTheOtherPath(t *testing.T) {
 		return http.ErrUseLastResponse
 	}}
 
-	for _, tc := range []struct{ provider, want string }{
-		{"Meshery", "/auth/login"},
-		{"", "/provider"},
-	} {
-		req, _ := http.NewRequest(http.MethodGet, s.URL()+"/api/pattern", nil)
-		req.AddCookie(&http.Cookie{Name: "token", Value: "stale-or-expired"})
-		if tc.provider != "" {
-			req.AddCookie(&http.Cookie{Name: "meshery-provider", Value: tc.provider})
-		}
-		resp, err := noRedirect.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		if got := resp.Header.Get("Location"); got != tc.want {
-			t.Errorf("provider=%q: redirected to %q, want %q", tc.provider, got, tc.want)
-		}
+	// A provider is selected throughout, so the gate is past and what is left is
+	// the session decision.
+	req, _ := http.NewRequest(http.MethodGet, s.URL()+"/api/pattern", nil)
+	req.AddCookie(&http.Cookie{Name: "meshery-provider", Value: s.Provider})
+	req.AddCookie(&http.Cookie{Name: "token", Value: "stale-or-expired"})
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got := resp.Header.Get("Location"); got != "/auth/login" {
+		t.Errorf("a present but invalid token redirected to %q, want /auth/login", got)
 	}
 
-	// And with no token cookie at all it goes to the provider's own login page.
-	req, _ := http.NewRequest(http.MethodGet, s.URL()+"/api/pattern", nil)
-	resp, err := noRedirect.Do(req)
+	// Provider selected and no token at all: the provider's own login page,
+	// which is off-host on a real deployment.
+	req, _ = http.NewRequest(http.MethodGet, s.URL()+"/api/pattern", nil)
+	req.AddCookie(&http.Cookie{Name: "meshery-provider", Value: s.Provider})
+	resp, err = noRedirect.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
 	if got := resp.Header.Get("Location"); got != mesherytest.RemoteLoginPath {
 		t.Errorf("with no token: redirected to %q, want %q", got, mesherytest.RemoteLoginPath)
+	}
+}
+
+// TestProviderGateAnswersBeforeTheSession covers the first thing an
+// unauthenticated client actually meets, which is not the session check. With no
+// provider selected, AuthMiddleware redirects to /provider carrying the original
+// path base64-encoded in ref, and it does that for every method rather than only
+// for GET.
+//
+// Verified against a running Meshery: an unauthenticated GET, POST and DELETE
+// all came back 302 to /provider?ref=..., before any session logic ran.
+func TestProviderGateAnswersBeforeTheSession(t *testing.T) {
+	s := mesherytest.New(t)
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+
+	want := "/provider?ref=" + base64.RawURLEncoding.EncodeToString([]byte("/api/pattern"))
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodPut} {
+		req, _ := http.NewRequest(method, s.URL()+"/api/pattern", nil)
+		resp, err := noRedirect.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusFound {
+			t.Errorf("%s with no provider: status = %d, want 302", method, resp.StatusCode)
+			continue
+		}
+		if got := resp.Header.Get("Location"); got != want {
+			t.Errorf("%s: Location = %q, want %q", method, got, want)
+		}
+	}
+}
+
+// TestNonGetWithAProviderButNoTokenIs404 covers the step past the gate. A
+// missing token is ErrEmptySession, which AuthMiddleware excludes from
+// HandleUnAuthenticated, so it lands in LoginHandler and a non-GET gets a bare
+// 404 that reads like a missing route rather than a missing session.
+func TestNonGetWithAProviderButNoTokenIs404(t *testing.T) {
+	s := mesherytest.New(t)
+
+	req, _ := http.NewRequest(http.MethodPost, s.URL()+"/api/pattern", nil)
+	req.AddCookie(&http.Cookie{Name: "meshery-provider", Value: s.Provider})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
 }
 
@@ -617,10 +646,11 @@ func TestRegistryWritesStillNeedASession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	// LoginHandler answers a non-GET with a bare 404, so an unauthenticated
-	// write reads as a missing endpoint rather than a missing session.
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 for an unauthenticated registry write", resp.StatusCode)
+	// No provider selected, so the provider gate answers before anything looks
+	// at the session, and it does that for writes too.
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "Sign in") {
+		t.Fatalf("an unauthenticated registry write should have hit the provider gate, got: %s", body)
 	}
 
 	// And the assertion notices, rather than treating the prefix as exempt.

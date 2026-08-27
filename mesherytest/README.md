@@ -71,8 +71,14 @@ cookie, else an HTTP header of the same name, else `?provider=`. The fake
 accepts all three for the provider and only the cookie for the token, and
 `AssertAuthenticated` reports which channel carried it.
 
-**Failing authentication is three behaviours, not one**, and which you get
-depends on whether a token cookie was sent at all. With none,
+**Failing authentication is not one behaviour, and the first thing you meet is
+not the session check.** With no provider selected, `AuthMiddleware` redirects to
+`/provider` with the original path base64-encoded in `ref`, and it does that for
+every method. Verified live: an unauthenticated GET, POST and DELETE all came
+back `302` to `/provider?ref=...`. A client that has not chosen a provider never
+reaches the session logic at all.
+
+Past that gate it depends on whether a token cookie was sent. With none,
 `RemoteProvider.GetSession` returns `ErrEmptySession`, which `AuthMiddleware`
 explicitly excludes from the `HandleUnAuthenticated` branch, so the request falls
 through to `LoginHandler`: a non-GET gets a bare `404`, and a GET is redirected
@@ -186,6 +192,9 @@ It seeds itself with 355 designs and 292 models, which is enough to exercise
 pagination and the design endpoints for real. Confirmed:
 
 ```
+GET /api/pattern                        (no provider)    -> 302 /provider?ref=L2FwaS9wYXR0ZXJu
+POST /api/pattern                       (no provider)    -> 302 /provider?ref=L2FwaS9wYXR0ZXJu
+GET /api/pattern    (meshery-provider=Local, or None)    -> 200
 GET /api/system/meshsync/resources                       -> 200 {"page":0,"pageSize":25,"totalCount":0,"resources":[],"design":{...}}
 GET /api/system/meshsync/resources?clusterIds=not-json   -> 400
 GET /api/system/meshsync/resources/summary               -> 400
@@ -222,7 +231,15 @@ did not reveal, because you only find it by asking a real server for the same
 design twice. The fake serves YAML from the list and JSON by ID, so a test can
 catch it.
 
-Not covered by the live run: anything needing a real Kubernetes cluster. MeshSync
+`Local` is the canonical local provider name and `None` is still accepted as the
+legacy alias; both selected it. The local provider then answered an
+unauthenticated request with `200`, which is the behaviour `WithLocalProvider()`
+reproduces and the reason broken auth can pass a whole suite locally.
+
+Not covered by the live run: the remote-provider session paths, which need a
+reachable remote provider, so the `/auth/login` redirect and the bare `404` on a
+non-GET past the gate are still read from the source rather than observed. Nor
+anything needing a real Kubernetes cluster. MeshSync
 wants an operator in-cluster, so the cluster-scoped endpoints were exercised
 against their guards and their empty shapes rather than against discovered
 workloads.

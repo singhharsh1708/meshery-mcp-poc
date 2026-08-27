@@ -1,6 +1,7 @@
 package mesherytest
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"maps"
 	"net/http"
@@ -255,17 +256,28 @@ const RemoteLoginPath = "/remote-provider/login"
 // AuthMiddleware answers 401 outright on an enforced-provider mismatch. Both are
 // states a client reaches only after the ones above.
 func (s *Server) rejectUnauthenticated(w http.ResponseWriter, r *http.Request) {
+	// The provider gate comes first and it does not care about the method.
+	// AuthMiddleware pulls the provider out of the request context and, when
+	// nothing valid is there, redirects to /provider carrying the original path
+	// base64-encoded in ref. Verified live: an unauthenticated GET, POST and
+	// DELETE all came back 302 to /provider?ref=..., before any session check.
+	if resolveProvider(r) != s.Provider {
+		ref := base64.RawURLEncoding.EncodeToString([]byte(r.URL.Path))
+		http.Redirect(w, r, "/provider?ref="+ref, http.StatusFound)
+		return
+	}
+
+	// Past the gate, a missing token is ErrEmptySession, which AuthMiddleware
+	// excludes from HandleUnAuthenticated, so it lands in LoginHandler: a
+	// non-GET gets a bare 404 and a GET goes to the provider's login page.
+	// Read from the source rather than observed, because reaching it needs a
+	// reachable remote provider.
 	if _, err := r.Cookie("token"); err != nil {
-		// ErrEmptySession: LoginHandler, not HandleUnAuthenticated.
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		http.Redirect(w, r, s.remoteLoginURL(), http.StatusFound)
-		return
-	}
-	if _, err := r.Cookie("meshery-provider"); err != nil {
-		http.Redirect(w, r, "/provider", http.StatusFound)
 		return
 	}
 	http.Redirect(w, r, "/auth/login", http.StatusFound)
