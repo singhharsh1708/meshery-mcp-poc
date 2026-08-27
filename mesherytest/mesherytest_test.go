@@ -360,8 +360,8 @@ func TestPageSizeSpellingIsPerEndpoint(t *testing.T) {
 		t.Errorf("lowercase pagesize=1 returned %d designs, want 1", n)
 	}
 	out = authedGet(t, s, "/api/pattern", "pageSize=1")
-	if n := len(out["patterns"].([]any)); n != 25 {
-		t.Errorf("camelCase pageSize=1 returned %d designs, want the default of 25: this endpoint ignores that spelling", n)
+	if n := len(out["patterns"].([]any)); n != 10 {
+		t.Errorf("camelCase pageSize=1 returned %d designs, want this endpoint's default of 10: it ignores that spelling", n)
 	}
 
 	// /api/system/meshsync/resources goes through getPaginationParams, which
@@ -401,6 +401,32 @@ func TestAssertPageSizeSpellingCatchesTheWrongOne(t *testing.T) {
 	}
 }
 
+// TestDefaultPageSizeIsPerEndpoint pins the defaults measured against a running
+// Meshery. They are not uniform, and they do not follow from the spelling: the
+// connections endpoint reads the camelCase spelling and still defaults to 10,
+// while meshsync resources reads it and defaults to 25. A client that assumes
+// one number everywhere mis-pages against four of these six.
+func TestDefaultPageSizeIsPerEndpoint(t *testing.T) {
+	s := mesherytest.New(t)
+
+	for _, tc := range []struct {
+		path  string
+		query string
+		key   string
+		want  float64
+	}{
+		{"/api/pattern", "", "patterns", 10},
+		{"/api/system/kubernetes/contexts", "", "contexts", 10},
+		{"/api/integrations/connections", "", "connections", 10},
+		{"/api/system/meshsync/resources", `clusterIds=["` + s.Data().ClusterID() + `"]`, "resources", 25},
+	} {
+		out := authedGet(t, s, tc.path, tc.query)
+		if got := out["pageSize"].(float64); got != tc.want {
+			t.Errorf("%s: default pageSize = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
 // TestPageSizeAllReturnsEverything covers the value that is not a size. Meshery
 // skips the limit entirely for all rather than falling back to the default of
 // 25, so a fake that quietly capped at 25 would hide a client bug on any
@@ -424,8 +450,8 @@ func TestPageSizeAllReturnsEverything(t *testing.T) {
 
 	// The default really is 25, so the assertion above is not vacuous.
 	out = authedGet(t, s, "/api/pattern", "")
-	if n := len(out["patterns"].([]any)); n != 25 {
-		t.Fatalf("no page size returned %d designs, want the default of 25", n)
+	if n := len(out["patterns"].([]any)); n != 10 {
+		t.Fatalf("no page size returned %d designs, want this endpoint's default of 10", n)
 	}
 
 	// And the envelope reports a real size rather than the no-limit sentinel.

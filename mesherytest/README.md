@@ -104,10 +104,27 @@ without it, so the two spellings are not interchangeable either.
 
 **Pagination.** Zero-based on both of Meshery's offset computations
 (`offset = page * limit` and `offset := (page) * pageSize`). Negative pages are
-clamped to 0, the default page size is 25, and `pageSize=all` skips the limit
-entirely rather than falling back to the default.
+clamped to 0, and `pageSize=all` skips the limit entirely rather than falling
+back to the default.
 
-**The page-size parameter is spelled differently per endpoint, silently.** Of
+**Both halves of paging are per endpoint, and neither is announced.** Measured
+against a running server by asking each endpoint with `pagesize`, with
+`pageSize`, and with neither:
+
+| endpoint | reads `pageSize` | default |
+|---|---|---|
+| `/api/pattern` | no | 10 |
+| `/api/system/kubernetes/contexts` | no | 10 |
+| `/api/identity/orgs` | no | 10 |
+| `/api/integrations/connections` | yes | 10 |
+| `/api/system/meshsync/resources` | yes | 25 |
+| `/api/registry/models` | yes | 25 |
+
+The two columns are independent. Connections reads the camelCase spelling and
+still defaults to 10, so a client cannot infer one from the other, and one that
+assumes 25 everywhere mis-pages against four of these six.
+
+**On the spelling specifically.** Of
 the endpoints this package serves, the contexts and designs handlers read
 `q.Get("pagesize")` and ignore `pageSize`, while `getPaginationParams` and
 `GetConnections` read `pageSize` and fall back to `pagesize`. A client sending

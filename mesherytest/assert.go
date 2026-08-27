@@ -3,6 +3,7 @@ package mesherytest
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -223,7 +224,7 @@ func (s *Server) AssertZeroBasedPaging(t T, path string) {
 		return
 	}
 	t.Errorf("%s: page = %q. Meshery computes offset = page * pageSize on both pagination paths, so page=1 skips the first %s results rather than returning them",
-		path, page, defaultOr(r.Query.Get("pageSize"), "25"))
+		path, page, defaultOr(r.Query.Get("pageSize"), defaultOr(r.Query.Get("pagesize"), strconv.Itoa(styleFor(path).defaultSize))))
 }
 
 func defaultOr(v, fallback string) string {
@@ -250,9 +251,9 @@ func (s *Server) AssertPageSizeSpelling(t T, path string) {
 	if !hasCamel && !hasLower {
 		return
 	}
-	if spellingFor(path) == canonicalFirst || hasLower {
+	if styleFor(path).readsCamelCase || hasLower {
 		return
 	}
-	t.Errorf("%s: sent pageSize=%s, but this endpoint reads only the lowercase pagesize, so that value is ignored and the default of 25 applies. Send pagesize instead, which every endpoint here accepts",
-		path, strings.Join(camel, ","))
+	t.Errorf("%s: sent pageSize=%s, but this endpoint reads only the lowercase pagesize, so that value is ignored and its default of %d applies. Send pagesize instead, which every endpoint here accepts",
+		path, strings.Join(camel, ","), styleFor(path).defaultSize)
 }

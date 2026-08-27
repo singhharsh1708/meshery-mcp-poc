@@ -332,40 +332,47 @@ func paginate(total, page, pageSize int) (start, end int) {
 
 const defaultPageSize = 25
 
-// sizeSpelling is how one endpoint spells its page-size parameter. Meshery is
-// not consistent about this, and the inconsistency is silent: an endpoint that
-// reads only the lowercase spelling ignores pageSize entirely and quietly
-// applies its default of 25.
-type sizeSpelling int
-
-const (
-	// lowercaseOnly: the handler reads q.Get("pagesize") and nothing else. This
-	// is the majority, including the contexts, designs, environments, workspaces
-	// and organizations endpoints.
-	lowercaseOnly sizeSpelling = iota
-	// canonicalFirst: the handler reads pageSize and falls back to pagesize.
-	// Only getPaginationParams (server/handlers/utils.go:97-100) and
-	// GetConnections (server/handlers/connections_handlers.go:272-275) do this.
-	canonicalFirst
-)
-
-// pageSizeSpelling records which spelling each endpoint the fake serves actually
-// reads, taken from the handler behind its route.
-var pageSizeSpelling = map[string]sizeSpelling{
-	"/api/system/kubernetes/contexts": lowercaseOnly,  // GetAllContexts
-	"/api/pattern":                    lowercaseOnly,  // GetMesheryPatternsHandler
-	"/api/integrations/connections":   canonicalFirst, // GetConnections
-	"/api/system/meshsync/resources":  canonicalFirst, // getPaginationParams
+// pageStyle is how one endpoint handles paging. Meshery is not consistent about
+// either half, and neither is announced: an endpoint that reads only the
+// lowercase spelling ignores pageSize and quietly applies its own default, and
+// that default is not the same everywhere.
+type pageStyle struct {
+	// readsCamelCase is true where the handler reads pageSize and falls back to
+	// pagesize, false where it reads pagesize and nothing else.
+	readsCamelCase bool
+	// defaultSize is what the endpoint applies when no page size is given.
+	defaultSize int
 }
 
-// spellingFor returns the page-size spelling for a path. Only the endpoints this
-// package paginates are listed; anything else falls back to getPaginationParams,
-// which is the behaviour behind most of the server.
-func spellingFor(path string) sizeSpelling {
-	if s, ok := pageSizeSpelling[path]; ok {
-		return s
+// pageStyles records what each endpoint the fake serves actually does. Measured
+// against a Meshery Server built from master and run locally, by asking each
+// endpoint with pagesize, with pageSize, and with neither.
+//
+//	                                  camelCase   default
+//	/api/pattern                         no          10
+//	/api/system/kubernetes/contexts      no          10
+//	/api/identity/orgs                   no          10
+//	/api/integrations/connections        yes         10
+//	/api/system/meshsync/resources       yes         25
+//	/api/registry/models                 yes         25
+//
+// The two halves are independent: connections reads the camelCase spelling and
+// still defaults to 10, so a client cannot infer one from the other.
+var pageStyles = map[string]pageStyle{
+	"/api/system/kubernetes/contexts": {readsCamelCase: false, defaultSize: 10},
+	"/api/pattern":                    {readsCamelCase: false, defaultSize: 10},
+	"/api/identity/orgs":              {readsCamelCase: false, defaultSize: 10},
+	"/api/integrations/connections":   {readsCamelCase: true, defaultSize: 10},
+	"/api/system/meshsync/resources":  {readsCamelCase: true, defaultSize: 25},
+}
+
+// styleFor returns the paging behaviour for a path. Anything unlisted falls back
+// to getPaginationParams, which reads both spellings and defaults to 25.
+func styleFor(path string) pageStyle {
+	if st, ok := pageStyles[path]; ok {
+		return st
 	}
-	return canonicalFirst
+	return pageStyle{readsCamelCase: true, defaultSize: defaultPageSize}
 }
 
 // pageParams reads the pagination parameters the way the given endpoint does.
@@ -382,10 +389,10 @@ func reportedSize(pageSize, returned int) int {
 	return pageSize
 }
 
-func pageParams(q url.Values, spelling sizeSpelling) (page, pageSize int) {
+func pageParams(q url.Values, style pageStyle) (page, pageSize int) {
 	page, _ = strconv.Atoi(q.Get("page"))
 	sizeStr := q.Get("pagesize")
-	if spelling == canonicalFirst {
+	if style.readsCamelCase {
 		if v := q.Get("pageSize"); v != "" {
 			sizeStr = v
 		}
@@ -397,7 +404,7 @@ func pageParams(q url.Values, spelling sizeSpelling) (page, pageSize int) {
 	}
 	pageSize, _ = strconv.Atoi(sizeStr)
 	if pageSize <= 0 {
-		pageSize = defaultPageSize
+		pageSize = style.defaultSize
 	}
 	return page, pageSize
 }

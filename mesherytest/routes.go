@@ -65,7 +65,7 @@ func (s *Server) handleRegistry(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleContexts(w http.ResponseWriter, r *http.Request) {
-	page, size := pageParams(r.URL.Query(), spellingFor(r.URL.Path))
+	page, size := pageParams(r.URL.Query(), styleFor(r.URL.Path))
 	total := len(s.data.Contexts)
 	start, end := paginate(total, page, size)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -78,7 +78,7 @@ func (s *Server) handleContexts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	page, size := pageParams(q, spellingFor(r.URL.Path))
+	page, size := pageParams(q, styleFor(r.URL.Path))
 
 	var filtered []Connection
 	kinds := q["kind"]
@@ -102,7 +102,7 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 // cluster_id IN (?), matches no rows, and still answers 200.
 func (s *Server) handleResources(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	page, size := pageParams(q, spellingFor(r.URL.Path))
+	page, size := pageParams(q, styleFor(r.URL.Path))
 	ids, filter := parseClusterIDs(q)
 
 	if filter == clusterFilterMalformed {
@@ -201,7 +201,7 @@ func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePatterns(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	page, size := pageParams(q, spellingFor(r.URL.Path))
+	page, size := pageParams(q, styleFor(r.URL.Path))
 
 	var filtered []Design
 	search := strings.ToLower(q.Get("search"))

@@ -21,7 +21,10 @@
 //     (server/handlers/utils.go:116) and offset := (page) * pageSize
 //     (server/models/persister_utils.go:10). Requesting page=1 skips the first
 //     page rather than returning it.
-//   - Negative pages are clamped to 0, and the default page size is 25.
+//   - Negative pages are clamped to 0. The default page size is per endpoint,
+//     not global: 10 on the provider-backed list endpoints (designs, contexts,
+//     connections, organizations) and 25 on the ones behind getPaginationParams
+//     (meshsync resources, registry). Measured against a running server.
 //   - pageSize=all skips the limit entirely rather than falling back to 25.
 //   - The page-size parameter is spelled differently per endpoint, silently.
 //     Of the endpoints this package serves, the contexts and designs handlers
