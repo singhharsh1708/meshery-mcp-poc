@@ -32,12 +32,13 @@ most of them, cannot tell.
 
 ## Measured
 
-Three servers, each a two-tool stdio server built against a different SDK, probed
+Four servers, each a one-tool stdio server built against a different SDK, probed
 with a request declaring `protocolVersion: 2026-07-28` and the
 `clientCapabilities` the revision requires:
 
 | server | `initialize` | `server/discover` | modern request | result shape | era |
 |---|---|---|---|---|---|
+| `mark3labs/mcp-go` v0.57.0 | yes | `-32601` | **runs it** | **legacy** | legacy |
 | `mark3labs/mcp-go` v0.58.0 | yes | `-32601` | **runs it** | **legacy** | legacy |
 | `mark3labs/mcp-go` v1.0.0-beta.1 | yes | yes | runs it | modern | dual-era |
 | `modelcontextprotocol/go-sdk` v1.7.0 | yes | yes | runs it | modern | dual-era |
@@ -75,6 +76,6 @@ stdio only. The Streamable HTTP era negotiation runs through the
 `MCP-Protocol-Version` header and its own server-validation rules, which this
 does not probe yet.
 
-The three rows above are two-tool servers, not the SDKs in full. They say what
+The rows above are one-tool servers, not the SDKs in full. They say what
 these SDKs do on a default stdio server, which is what an MCP server author gets
 by following each SDK's README.
