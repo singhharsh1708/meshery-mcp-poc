@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -257,4 +258,116 @@ func (s *syncBuf) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.buf.String()
+}
+
+// A server whose first initialize fails and whose second succeeds.
+func flakyInit(in io.Reader, out io.Writer, attempts *int32) {
+	sc := bufio.NewScanner(in)
+	enc := json.NewEncoder(out)
+	for sc.Scan() {
+		var m struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if json.Unmarshal(sc.Bytes(), &m) != nil || len(m.ID) == 0 {
+			continue
+		}
+		switch m.Method {
+		case "initialize":
+			if atomic.AddInt32(attempts, 1) == 1 {
+				_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(m.ID),
+					"error": map[string]any{"code": -32000, "message": "starting up"}})
+				continue
+			}
+			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(m.ID),
+				"result": map[string]any{"protocolVersion": "2025-11-25",
+					"capabilities": map[string]any{"tools": map[string]any{}},
+					"serverInfo":   map[string]any{"name": "wrapped"}}})
+		case "tools/list":
+			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(m.ID),
+				"result": map[string]any{"tools": []any{}}})
+		}
+	}
+}
+
+// A server that never replies to the first request but answers later ones.
+func stalling(in io.Reader, out io.Writer, seen *int32) {
+	sc := bufio.NewScanner(in)
+	enc := json.NewEncoder(out)
+	for sc.Scan() {
+		var m struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if json.Unmarshal(sc.Bytes(), &m) != nil || len(m.ID) == 0 {
+			continue
+		}
+		if m.Method == "initialize" {
+			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(m.ID),
+				"result": map[string]any{"protocolVersion": "2025-11-25",
+					"capabilities": map[string]any{}, "serverInfo": map[string]any{"name": "w"}}})
+			continue
+		}
+		if atomic.AddInt32(seen, 1) == 1 {
+			continue // swallow the first real request
+		}
+		_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(m.ID),
+			"result": map[string]any{"tools": []any{}}})
+	}
+}
+
+func drive(t *testing.T, server func(io.Reader, io.Writer), reqs []map[string]any, wait time.Duration) string {
+	t.Helper()
+	c2b, cw := io.Pipe()
+	b2s, sr := io.Pipe()
+	s2b, sw := io.Pipe()
+	out := &syncBuf{}
+	go server(b2s, sw)
+	b := dualera.New(sr, s2b, out)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = b.Run(ctx, c2b) }()
+	// Written from a goroutine: if the bridge stops reading, the pipe write
+	// blocks, and that blocking is itself one of the things under test.
+	go func() {
+		enc := json.NewEncoder(cw)
+		for _, r := range reqs {
+			_ = enc.Encode(r)
+			time.Sleep(40 * time.Millisecond)
+		}
+	}()
+	time.Sleep(wait)
+	_ = cw.Close()
+	return out.String()
+}
+
+func modern(id int, method string) map[string]any {
+	return map[string]any{"jsonrpc": "2.0", "id": id, "method": method,
+		"params": map[string]any{"_meta": map[string]any{
+			dualera.MetaProtocolVersion: dualera.ModernVersion}}}
+}
+
+// A handshake that fails once must not disable the bridge forever.
+func TestHandshakeFailureIsNotPermanent(t *testing.T) {
+	var attempts int32
+	got := drive(t, func(r io.Reader, w io.Writer) { flakyInit(r, w, &attempts) },
+		[]map[string]any{modern(1, "tools/list"), modern(2, "tools/list")}, 600*time.Millisecond)
+
+	if !strings.Contains(got, `"id":2`) {
+		t.Fatalf("no reply to the second request at all: %s", got)
+	}
+	if strings.Count(got, "cannot reach the wrapped server") > 1 {
+		t.Errorf("the second request still failed on a cached handshake error:\n%s", got)
+	}
+}
+
+// One unanswered request must not stall every later one.
+func TestOneStalledRequestDoesNotBlockTheRest(t *testing.T) {
+	var seen int32
+	got := drive(t, func(r io.Reader, w io.Writer) { stalling(r, w, &seen) },
+		[]map[string]any{modern(1, "tools/list"), modern(2, "tools/list")}, 800*time.Millisecond)
+
+	if !strings.Contains(got, `"id":2`) {
+		t.Fatalf("request 2 never got a reply because request 1 stalled the loop:\n%s", got)
+	}
 }

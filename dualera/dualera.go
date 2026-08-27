@@ -51,6 +51,9 @@ const (
 // A client that happens to use these ids would otherwise see our replies.
 const internalIDBase = 1 << 52
 
+// maxInflight bounds concurrent upstream calls.
+const maxInflight = 64
+
 type message struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,omitempty"`
@@ -75,9 +78,16 @@ type Bridge struct {
 	writeMu  sync.Mutex
 	clientMu sync.Mutex
 
-	handshake    *handshakeInfo
-	handshakeErr error
-	once         sync.Once
+	// handshakeMu guards the one legacy session the bridge holds. A failure is
+	// deliberately not cached: the wrapped server may simply not have finished
+	// starting, and a bridge that disabled itself on the first attempt would
+	// stay broken after the server became healthy.
+	handshakeMu sync.Mutex
+	handshake   *handshakeInfo
+
+	// inflight bounds concurrent upstream calls so a client cannot make the
+	// bridge spawn unboundedly many goroutines.
+	inflight chan struct{}
 }
 
 type handshakeInfo struct {
@@ -97,6 +107,7 @@ func New(toServer io.Writer, fromServer io.Reader, toClient io.Writer) *Bridge {
 		toClient:   toClient,
 		pending:    make(map[string]chan *message),
 		nextID:     internalIDBase,
+		inflight:   make(chan struct{}, maxInflight),
 	}
 }
 
@@ -151,13 +162,31 @@ func (b *Bridge) pumpServer() {
 func (b *Bridge) handle(ctx context.Context, msg *message, raw []byte) {
 	switch {
 	case msg.Method == "server/discover" && msg.isRequest():
-		b.serveDiscover(ctx, msg)
+		b.async(ctx, msg, b.serveDiscover)
 	case msg.isRequest() && isModern(msg.Params):
-		b.serveModern(ctx, msg)
+		b.async(ctx, msg, b.serveModern)
 	default:
 		// Legacy traffic and notifications pass through untouched.
 		b.writeServer(raw)
 	}
+}
+
+// async serves a request that has to wait on the wrapped server without holding
+// up the client loop. JSON-RPC matches replies by id, so answering out of order
+// is allowed, and answering in order would let one slow or unanswered request
+// starve everything behind it.
+func (b *Bridge) async(ctx context.Context, msg *message, serve func(context.Context, *message)) {
+	cp := *msg
+	select {
+	case b.inflight <- struct{}{}:
+	default:
+		b.replyError(cp.ID, -32603, "too many requests in flight")
+		return
+	}
+	go func() {
+		defer func() { <-b.inflight }()
+		serve(ctx, &cp)
+	}()
 }
 
 // serveDiscover answers from the wrapped server's own handshake, so the
@@ -235,41 +264,40 @@ func withModernMarkers(result, serverInfo json.RawMessage) []byte {
 // ensureHandshake performs the bridge's own legacy initialize once, and caches
 // what the server reported.
 func (b *Bridge) ensureHandshake(ctx context.Context) (*handshakeInfo, error) {
-	b.once.Do(func() {
-		params, _ := json.Marshal(map[string]any{
-			"protocolVersion": LegacyVersion,
-			"capabilities":    map[string]any{},
-			"clientInfo":      map[string]any{"name": "dualera", "version": "0"},
-		})
-		resp, err := b.call(ctx, "initialize", params)
-		if err != nil {
-			b.handshakeErr = err
-			return
-		}
-		if len(resp.Error) > 0 {
-			b.handshakeErr = fmt.Errorf("initialize failed: %s", resp.Error)
-			return
-		}
-		var r struct {
-			Capabilities    json.RawMessage `json:"capabilities"`
-			ServerInfo      json.RawMessage `json:"serverInfo"`
-			Instructions    string          `json:"instructions"`
-			ProtocolVersion string          `json:"protocolVersion"`
-		}
-		if err := json.Unmarshal(resp.Result, &r); err != nil {
-			b.handshakeErr = err
-			return
-		}
-		b.handshake = &handshakeInfo{
-			Capabilities: r.Capabilities, ServerInfo: r.ServerInfo,
-			Instructions: r.Instructions, Version: r.ProtocolVersion,
-		}
-		// The wrapped server expects the initialized notification before it
-		// will serve requests.
-		b.writeServer([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
+	b.handshakeMu.Lock()
+	defer b.handshakeMu.Unlock()
+	if b.handshake != nil {
+		return b.handshake, nil
+	}
+
+	params, _ := json.Marshal(map[string]any{
+		"protocolVersion": LegacyVersion,
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "dualera", "version": "0"},
 	})
-	if b.handshakeErr != nil {
-		return nil, b.handshakeErr
+	resp, err := b.call(ctx, "initialize", params)
+	if err != nil {
+		return nil, err
+	}
+	if len(resp.Error) > 0 {
+		return nil, fmt.Errorf("initialize failed: %s", resp.Error)
+	}
+	var r struct {
+		Capabilities    json.RawMessage `json:"capabilities"`
+		ServerInfo      json.RawMessage `json:"serverInfo"`
+		Instructions    string          `json:"instructions"`
+		ProtocolVersion string          `json:"protocolVersion"`
+	}
+	if err := json.Unmarshal(resp.Result, &r); err != nil {
+		return nil, err
+	}
+	// The wrapped server expects the initialized notification before it will
+	// serve requests.
+	b.writeServer([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
+
+	b.handshake = &handshakeInfo{
+		Capabilities: r.Capabilities, ServerInfo: r.ServerInfo,
+		Instructions: r.Instructions, Version: r.ProtocolVersion,
 	}
 	return b.handshake, nil
 }
