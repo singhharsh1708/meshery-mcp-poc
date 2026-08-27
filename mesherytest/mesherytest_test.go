@@ -16,6 +16,10 @@ import (
 
 const resourcesPath = "/api/system/meshsync/resources"
 
+// naiveGet is a client written the way a Meshery client is usually written the
+// first time: a bearer token, no cluster filter, one-based pages. Every one of
+// these choices is wrong against a real Meshery, and none of them produce an
+// error. The tests below use it to show what the fake catches.
 func naiveGet(t *testing.T, base, path, query string) (int, []byte) {
 	t.Helper()
 	u := base + path
@@ -62,6 +66,15 @@ func authedGet(t *testing.T, s *mesherytest.Server, path, query string) map[stri
 	return out
 }
 
+// TestBearerAuthLandsOnLoginPage is the first bug the fake reproduces. A bearer
+// token is not a Meshery session, and the failure is not a 401: the request is
+// redirected, the redirect is followed, and the client parses an HTML login
+// page. A mock that checks the Authorization header would call this a pass.
+//
+// Note where the redirect goes. With no token cookie, GetSession returns
+// ErrEmptySession, which AuthMiddleware excludes from HandleUnAuthenticated, so
+// the request lands in LoginHandler and is sent to the remote provider's own
+// login page rather than to anything on Meshery.
 func TestBearerAuthLandsOnLoginPage(t *testing.T) {
 	s := mesherytest.New(t)
 
@@ -79,6 +92,10 @@ func TestBearerAuthLandsOnLoginPage(t *testing.T) {
 	}
 }
 
+// TestLocalProviderAcceptsAnything is why the bug above is latent rather than
+// obvious. DefaultLocalProvider.GetSession returns nil unconditionally, so a
+// client with no working authentication passes every test against a locally
+// started Meshery and fails the first time it meets a remote provider.
 func TestLocalProviderAcceptsAnything(t *testing.T) {
 	s := mesherytest.New(t, mesherytest.WithLocalProvider())
 
@@ -92,6 +109,11 @@ func TestLocalProviderAcceptsAnything(t *testing.T) {
 	}
 }
 
+// TestProviderHasThreeChannels covers the asymmetry between the two credentials.
+// The token is read from its cookie and nowhere else, but the provider falls
+// back to a header of the same name and then to ?provider=, so a client that
+// sends the provider either of those other ways is not broken and the fake must
+// not pretend otherwise.
 func TestProviderHasThreeChannels(t *testing.T) {
 	const path = "/api/system/kubernetes/contexts"
 
@@ -135,6 +157,8 @@ func TestProviderHasThreeChannels(t *testing.T) {
 	}
 }
 
+// TestTokenIsCookieOnly is the other half of that asymmetry: the provider has
+// three channels, the session has one.
 func TestTokenIsCookieOnly(t *testing.T) {
 	s := mesherytest.New(t)
 
@@ -153,6 +177,10 @@ func TestTokenIsCookieOnly(t *testing.T) {
 	}
 }
 
+// TestUnauthenticatedNonGetIs404 covers the half of the empty-session path that
+// is not a redirect at all. LoginHandler answers a non-GET with a bare 404, so a
+// client whose session has not been established sees what looks like a missing
+// route.
 func TestUnauthenticatedNonGetIs404(t *testing.T) {
 	s := mesherytest.New(t)
 
@@ -169,6 +197,10 @@ func TestUnauthenticatedNonGetIs404(t *testing.T) {
 	}
 }
 
+// TestInvalidTokenTakesTheOtherPath separates the two rejection routes. A token
+// cookie that is present but wrong does reach HandleUnAuthenticated, which stays
+// on Meshery and redirects to /auth/login or /provider depending on whether the
+// provider cookie is there.
 func TestInvalidTokenTakesTheOtherPath(t *testing.T) {
 	s := mesherytest.New(t)
 
@@ -195,6 +227,7 @@ func TestInvalidTokenTakesTheOtherPath(t *testing.T) {
 		}
 	}
 
+	// And with no token cookie at all it goes to the provider's own login page.
 	req, _ := http.NewRequest(http.MethodGet, s.URL()+"/api/pattern", nil)
 	resp, err := noRedirect.Do(req)
 	if err != nil {
@@ -206,6 +239,9 @@ func TestInvalidTokenTakesTheOtherPath(t *testing.T) {
 	}
 }
 
+// TestMissingClusterFilterReturnsNothing is the second bug. Meshery filters
+// with cluster_id IN (?), so no filter is an empty IN clause: 200, an empty
+// list, and a model that reports the cluster is empty.
 func TestMissingClusterFilterReturnsNothing(t *testing.T) {
 	s := mesherytest.New(t)
 
@@ -220,6 +256,11 @@ func TestMissingClusterFilterReturnsNothing(t *testing.T) {
 	}
 }
 
+// TestBareClusterIDIsRejected covers the near miss: the parameter is present and
+// looks right, but the handler json.Unmarshals it into a []string and answers
+// 400 when that fails. Unlike the absent case above, this one is loud, and the
+// distinction is worth reproducing exactly rather than collapsing both into an
+// empty result.
 func TestBareClusterIDIsRejected(t *testing.T) {
 	s := mesherytest.New(t)
 
@@ -237,6 +278,10 @@ func TestBareClusterIDIsRejected(t *testing.T) {
 	}
 }
 
+// TestSummaryUsesADifferentSpelling covers the trap between the two sibling
+// endpoints: resources takes a JSON clusterIds array, summary takes a repeated
+// singular clusterId and answers 400 without one. Reusing the first spelling on
+// the second endpoint fails outright.
 func TestSummaryUsesADifferentSpelling(t *testing.T) {
 	s := mesherytest.New(t)
 	const path = "/api/system/meshsync/resources/summary"
@@ -259,6 +304,10 @@ func TestSummaryUsesADifferentSpelling(t *testing.T) {
 	}
 }
 
+// TestSummaryClusterIDIsAPresenceCheck covers the shape of the summary guard.
+// It tests that the clusterId key is present, not that it holds anything useful,
+// so an empty value or the literal "all" that the UI sends both sail past it and
+// come back 200 with a summary of nothing in particular.
 func TestSummaryClusterIDIsAPresenceCheck(t *testing.T) {
 	s := mesherytest.New(t)
 	const path = "/api/system/meshsync/resources/summary"
@@ -270,6 +319,7 @@ func TestSummaryClusterIDIsAPresenceCheck(t *testing.T) {
 		}
 	}
 
+	// And the assertion still objects, because neither value names the cluster.
 	failed, _ := (&recorder{}).run(func(tt mesherytest.T) {
 		s.AssertClusterScoped(tt, path, s.Data().ClusterID())
 	})
@@ -278,6 +328,9 @@ func TestSummaryClusterIDIsAPresenceCheck(t *testing.T) {
 	}
 }
 
+// TestPageOneSkipsTheFirstPage is the third bug. Pagination is zero-based on
+// both of Meshery's offset paths, so a client that opens at page 1 misses the
+// first page of every list. With one seeded cluster, page 1 is empty.
 func TestPageOneSkipsTheFirstPage(t *testing.T) {
 	s := mesherytest.New(t)
 
@@ -292,9 +345,16 @@ func TestPageOneSkipsTheFirstPage(t *testing.T) {
 	}
 }
 
+// TestPageSizeSpellingIsPerEndpoint is the trap that a fake accepting both
+// spellings everywhere would hide. Meshery is not consistent: most handlers read
+// only the lowercase pagesize, and there the camelCase pageSize is ignored and
+// the default of 25 quietly applies. Two paths read pageSize first and fall back
+// to pagesize. Nothing errors either way.
 func TestPageSizeSpellingIsPerEndpoint(t *testing.T) {
 	s := mesherytest.New(t)
 
+	// /api/pattern is served by GetMesheryPatternsHandler, which reads
+	// q.Get("pagesize") and nothing else.
 	out := authedGet(t, s, "/api/pattern", "pagesize=1")
 	if n := len(out["patterns"].([]any)); n != 1 {
 		t.Errorf("lowercase pagesize=1 returned %d designs, want 1", n)
@@ -304,6 +364,8 @@ func TestPageSizeSpellingIsPerEndpoint(t *testing.T) {
 		t.Errorf("camelCase pageSize=1 returned %d designs, want the default of 25: this endpoint ignores that spelling", n)
 	}
 
+	// /api/system/meshsync/resources goes through getPaginationParams, which
+	// reads pageSize first and falls back to pagesize, so both work there.
 	cluster := `clusterIds=["` + s.Data().ClusterID() + `"]`
 	for _, spelling := range []string{"pageSize=1", "pagesize=1"} {
 		out = authedGet(t, s, "/api/system/meshsync/resources", cluster+"&"+spelling)
@@ -313,6 +375,8 @@ func TestPageSizeSpellingIsPerEndpoint(t *testing.T) {
 	}
 }
 
+// TestAssertPageSizeSpellingCatchesTheWrongOne checks the assertion fires when a
+// client sends a spelling the endpoint does not read.
 func TestAssertPageSizeSpellingCatchesTheWrongOne(t *testing.T) {
 	s := mesherytest.New(t)
 	authedGet(t, s, "/api/pattern", "pageSize=1")
@@ -327,6 +391,7 @@ func TestAssertPageSizeSpellingCatchesTheWrongOne(t *testing.T) {
 		t.Errorf("the failure should name the spelling the endpoint reads, got: %s", msg)
 	}
 
+	// And it passes on the right one.
 	s2 := mesherytest.New(t)
 	authedGet(t, s2, "/api/pattern", "pagesize=1")
 	if failed, msg := (&recorder{}).run(func(tt mesherytest.T) {
@@ -336,6 +401,15 @@ func TestAssertPageSizeSpellingCatchesTheWrongOne(t *testing.T) {
 	}
 }
 
+// TestPageSizeAllReturnsEverything covers the value that is not a size. Meshery
+// skips the limit entirely for all rather than falling back to the default of
+// 25, so a fake that quietly capped at 25 would hide a client bug on any
+// collection larger than a page.
+//
+// The spelling and the fixture size both matter here. /api/pattern reads only
+// the lowercase pagesize, so sending pageSize=all would never reach the branch
+// under test, and with 25 or fewer designs "no limit" and "defaulted to 25"
+// return the same thing.
 func TestPageSizeAllReturnsEverything(t *testing.T) {
 	s := mesherytest.New(t)
 	total := len(s.Data().Designs)
@@ -348,17 +422,21 @@ func TestPageSizeAllReturnsEverything(t *testing.T) {
 		t.Fatalf("pagesize=all returned %d designs, want all %d", n, total)
 	}
 
+	// The default really is 25, so the assertion above is not vacuous.
 	out = authedGet(t, s, "/api/pattern", "")
 	if n := len(out["patterns"].([]any)); n != 25 {
 		t.Fatalf("no page size returned %d designs, want the default of 25", n)
 	}
 
+	// And the envelope reports a real size rather than the no-limit sentinel.
 	out = authedGet(t, s, "/api/pattern", "pagesize=all")
 	if got := out["pageSize"].(float64); got != float64(total) {
 		t.Errorf("pageSize = %v with no limit, want the row count %d", got, total)
 	}
 }
 
+// TestNegativePageIsClamped matches getPaginationParams, which forces a
+// negative page to 0 rather than computing a negative offset.
 func TestNegativePageIsClamped(t *testing.T) {
 	s := mesherytest.New(t)
 
@@ -371,6 +449,7 @@ func TestNegativePageIsClamped(t *testing.T) {
 	}
 }
 
+// TestPageBeyondTheEndIsEmptyNotAPanic checks the far edge of the arithmetic.
 func TestPageBeyondTheEndIsEmptyNotAPanic(t *testing.T) {
 	s := mesherytest.New(t)
 
@@ -384,6 +463,10 @@ func TestPageBeyondTheEndIsEmptyNotAPanic(t *testing.T) {
 	}
 }
 
+// TestAsDesignClearsTheFlatList covers the topology path: setting asDesign moves
+// the answer into a design and empties resources, so a client that keeps reading
+// resources gets an empty list and no error. Meshery's own reference says the
+// resources are omitted; this pins that it means emptied rather than absent.
 func TestAsDesignClearsTheFlatList(t *testing.T) {
 	s := mesherytest.New(t)
 
@@ -402,6 +485,10 @@ func TestAsDesignClearsTheFlatList(t *testing.T) {
 	}
 }
 
+// TestDesignFileIsAJSONString covers the shape trap on designs. patternFile is
+// a JSON string under a camelCase key on current Meshery. Decoding it as a
+// nested object, or looking only for pattern_file, yields an empty design with
+// no error at all.
 func TestDesignFileIsAJSONString(t *testing.T) {
 	s := mesherytest.New(t)
 
@@ -422,6 +509,7 @@ func TestDesignFileIsAJSONString(t *testing.T) {
 	}
 }
 
+// TestOrgScopedEndpointsRequireOrgID covers the last silent-400 family.
 func TestOrgScopedEndpointsRequireOrgID(t *testing.T) {
 	s := mesherytest.New(t)
 
@@ -440,6 +528,8 @@ func TestOrgScopedEndpointsRequireOrgID(t *testing.T) {
 	}
 }
 
+// TestRegistryReadsAreUnauthenticated pins the routes that genuinely need no
+// session, so a client is not made to authenticate where Meshery does not.
 func TestRegistryReadsAreUnauthenticated(t *testing.T) {
 	s := mesherytest.New(t)
 
@@ -452,6 +542,9 @@ func TestRegistryReadsAreUnauthenticated(t *testing.T) {
 	}
 }
 
+// TestRegistryWritesStillNeedASession covers the half of the registry that is
+// not NoAuth. Exempting the whole prefix would let an unauthenticated write past
+// AssertAuthenticated, which is exactly the kind of hole a blanket rule leaves.
 func TestRegistryWritesStillNeedASession(t *testing.T) {
 	s := mesherytest.New(t)
 
@@ -461,11 +554,13 @@ func TestRegistryWritesStillNeedASession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-
+	// LoginHandler answers a non-GET with a bare 404, so an unauthenticated
+	// write reads as a missing endpoint rather than a missing session.
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 for an unauthenticated registry write", resp.StatusCode)
 	}
 
+	// And the assertion notices, rather than treating the prefix as exempt.
 	failed, msg := (&recorder{}).run(s.AssertAuthenticated)
 	if !failed {
 		t.Error("AssertAuthenticated exempted an unauthenticated registry write")
@@ -475,6 +570,10 @@ func TestRegistryWritesStillNeedASession(t *testing.T) {
 	}
 }
 
+// TestRealClientSatisfiesEveryAssertion is the positive control. The client in
+// this repository is driven through the fake and every assertion the package
+// offers is applied to what it actually sent. If the assertions were vacuous,
+// this would pass with a broken client; the tests above show they are not.
 func TestRealClientSatisfiesEveryAssertion(t *testing.T) {
 	s := mesherytest.New(t)
 	c := meshery.New(s.URL(), s.Token, s.Provider)
@@ -539,15 +638,21 @@ func TestRealClientSatisfiesEveryAssertion(t *testing.T) {
 	s.AssertZeroBasedPaging(t, "/api/integrations/connections")
 	s.AssertQuery(t, "/api/integrations/connections", "kind", "kubernetes")
 
+	// Fields that would carry Secret data, last-applied-config and the rest of
+	// an object's payload to the model. None are ever requested.
 	for _, field := range []string{"spec", "status", "labels", "annotations"} {
 		s.AssertNoQuery(t, resourcesPath, field)
 	}
 
+	// A read-only server touches no mutating route.
 	for _, path := range []string{"/api/pattern/deploy", "/api/pattern/import"} {
 		s.AssertNotCalled(t, path)
 	}
 }
 
+// recorder captures assertion failures instead of reporting them, so a test can
+// check that an assertion fires. Fatalf panics with a sentinel, which stands in
+// for the runtime.Goexit a real *testing.T would perform.
 type recorder struct {
 	failures []string
 }
@@ -565,7 +670,12 @@ func (r *recorder) Fatalf(format string, args ...any) {
 	panic(fatal{})
 }
 
+// run applies an assertion and reports whether it failed, along with the
+// message, so a test can check the message explains the trap rather than only
+// reporting a mismatch.
 func (r *recorder) run(assert func(mesherytest.T)) (failed bool, msg string) {
+	// The result is set here rather than after assert returns, because Fatalf
+	// unwinds through this defer and never reaches the return below.
 	defer func() {
 		if p := recover(); p != nil {
 			if _, ok := p.(fatal); !ok {
@@ -578,6 +688,10 @@ func (r *recorder) run(assert func(mesherytest.T)) (failed bool, msg string) {
 	return
 }
 
+// TestAssertionsFailOnABrokenClient proves the assertions are not vacuous, by
+// driving the fake with a client that gets each thing wrong and checking the
+// matching assertion fires. Without this, a passing suite would only mean the
+// assertions never say anything.
 func TestAssertionsFailOnABrokenClient(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -659,12 +773,20 @@ func TestAssertionsFailOnABrokenClient(t *testing.T) {
 	}
 }
 
+// The tests below cover the fake's own robustness rather than Meshery's
+// behaviour. A test helper that panics, races or leaks is worse than no helper,
+// because it fails in someone else's suite and looks like their bug.
+
+// TestDoubleCloseIsSafe checks the exported Close composes with the t.Cleanup
+// that New already registers, so calling it explicitly is not a trap.
 func TestDoubleCloseIsSafe(t *testing.T) {
 	s := mesherytest.New(t)
 	s.Close()
 	s.Close()
 }
 
+// TestConcurrentUse drives the fake from many goroutines while reading the
+// recorded requests, which is the shape a parallel suite produces.
 func TestConcurrentUse(t *testing.T) {
 	s := mesherytest.New(t)
 	var wg sync.WaitGroup
@@ -683,6 +805,8 @@ func TestConcurrentUse(t *testing.T) {
 	}
 }
 
+// TestGarbagePaginationDoesNotPanic feeds the pagination arithmetic values a
+// confused client might send. None of them should reach a slice bounds panic.
 func TestGarbagePaginationDoesNotPanic(t *testing.T) {
 	s := mesherytest.New(t)
 	for _, q := range []string{
@@ -692,7 +816,8 @@ func TestGarbagePaginationDoesNotPanic(t *testing.T) {
 		"page=&pagesize=",
 		"pagesize=0",
 		"page=2147483647&pagesize=2147483647",
-
+		// These overflow page*pageSize on a 64-bit int; the third wraps the
+		// product negative.
 		"page=1&pagesize=9223372036854775807",
 		"page=2&pagesize=4611686018427387904",
 		"page=4611686018427387904&pagesize=2",
@@ -702,6 +827,8 @@ func TestGarbagePaginationDoesNotPanic(t *testing.T) {
 		req.AddCookie(&http.Cookie{Name: "meshery-provider", Value: s.Provider})
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
+			// A panic in the handler closes the connection, so a transport
+			// error here means the fake crashed rather than answered.
 			t.Fatalf("%s: handler did not answer: %v", q, err)
 		}
 		resp.Body.Close()

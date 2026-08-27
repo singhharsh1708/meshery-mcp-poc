@@ -18,6 +18,8 @@ const (
 	designTopologyTemplate  = "meshery://designs/{design_id}/topology"
 )
 
+// The SDK does not pass URI template variables to the handler, so each handler
+// re-matches the concrete URI against its own compiled template.
 var (
 	clusterTopologyPattern = uritemplate.MustNew(clusterTopologyTemplate)
 	clusterSummaryPattern  = uritemplate.MustNew(clusterSummaryTemplate)
@@ -25,6 +27,9 @@ var (
 	designTopologyPattern  = uritemplate.MustNew(designTopologyTemplate)
 )
 
+// subscriptions records the resource URIs clients are watching. MeshSync has no
+// push channel for topology deltas, so a real server polls these and calls
+// Server.ResourceUpdated when the content changes.
 type subscriptions struct {
 	mu  sync.Mutex
 	set map[string]int
@@ -72,6 +77,7 @@ func jsonResource(uri string, v any) (*mcp.ReadResourceResult, error) {
 	}}}, nil
 }
 
+// addTopologyResources registers the templated read-only topology resources.
 func addTopologyResources(s *mcp.Server, c *meshery.Client) {
 	s.AddResourceTemplate(&mcp.ResourceTemplate{
 		Name:        "cluster-topology",
@@ -84,7 +90,8 @@ func addTopologyResources(s *mcp.Server, c *meshery.Client) {
 		if vals == nil {
 			return nil, mcp.ResourceNotFoundError(req.Params.URI)
 		}
-
+		// An empty variable still matches the template, and an empty cluster id
+		// would widen the query to every cluster rather than narrowing it.
 		clusterID := vals.Get("cluster_id").String()
 		if clusterID == "" {
 			return nil, mcp.ResourceNotFoundError(req.Params.URI)
@@ -133,6 +140,7 @@ func addTopologyResources(s *mcp.Server, c *meshery.Client) {
 		}
 		clusterID, namespace := vals.Get("cluster_id").String(), vals.Get("namespace").String()
 		if clusterID == "" || namespace == "" {
+			// Either empty would drop its filter and silently widen the read.
 			return nil, mcp.ResourceNotFoundError(req.Params.URI)
 		}
 		r, err := c.ListWorkloads(ctx, clusterID, namespace, 0, 0)

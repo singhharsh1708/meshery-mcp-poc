@@ -6,12 +6,15 @@ import (
 )
 
 func (s *Server) routes(mux *http.ServeMux) {
+	// The login page a redirect-following client lands on.
 	mux.HandleFunc("/provider", loginPage)
 	mux.HandleFunc("/auth/login", loginPage)
 	mux.HandleFunc(RemoteLoginPath, loginPage)
 
+	// Unauthenticated by design, matching Meshery.
 	mux.HandleFunc("/api/system/version", s.handleVersion)
-
+	// registerRegistryRoute binds every registry subpath at both prefixes, with
+	// the same handler and the same methods, so the alias is not optional.
 	for _, prefix := range []string{"/api/registry", "/api/meshmodels"} {
 		mux.HandleFunc(prefix, s.handleRegistry)
 		mux.HandleFunc(prefix+"/", s.handleRegistry)
@@ -28,6 +31,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/identity/orgs", s.guard(s.handleOrgs))
 }
 
+// guard applies Meshery's authentication behaviour: a redirect, not a 401.
 func (s *Server) guard(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.authenticated(r) {
@@ -46,6 +50,8 @@ func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// handleRegistry stands in for the registry family, served at both /api/registry
+// and the deprecated /api/meshmodels alias. Reads are NoAuth; writes are not.
 func (s *Server) handleRegistry(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		if !s.authenticated(r) {
@@ -90,6 +96,10 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleResources reproduces the cluster filter, including the difference
+// between getting it wrong loudly and getting it wrong silently. A malformed
+// clusterIds is a 400; an absent one binds an empty slice into
+// cluster_id IN (?), matches no rows, and still answers 200.
 func (s *Server) handleResources(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	page, size := pageParams(q, spellingFor(r.URL.Path))
@@ -115,6 +125,7 @@ func (s *Server) handleResources(w http.ResponseWriter, r *http.Request) {
 			filtered = append(filtered, res)
 		}
 	}
+	// An absent filter leaves filtered nil, which is the whole point.
 
 	if q.Get("asDesign") == "true" {
 		s.writeAsDesign(w, page, size, filtered)
@@ -130,6 +141,13 @@ func (s *Server) handleResources(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// writeAsDesign reproduces the asDesign path: the flat resource list is cleared
+// and a design carrying components and relationships is returned instead.
+//
+// Meshery's published v0.9 REST API reference puts it as "asDesign is a boolean
+// value. If true then the response is returned as a design and resources are
+// omitted". It is absent from docs/data/openapi.yml, the repository's only
+// machine-readable spec, so a test is the only thing pinning it.
 func (s *Server) writeAsDesign(w http.ResponseWriter, page, size int, res []Resource) {
 	components := make([]map[string]any, 0, len(res))
 	for _, r := range res {
@@ -150,7 +168,7 @@ func (s *Server) writeAsDesign(w http.ResponseWriter, page, size int, res []Reso
 		"page":       page,
 		"pageSize":   reportedSize(size, len(res)),
 		"totalCount": len(res),
-		"resources":  []Resource{},
+		"resources":  []Resource{}, // emptied, as the real handler does
 		"design": map[string]any{
 			"name":          "cluster",
 			"schemaVersion": "designs.meshery.io/v1beta1",
@@ -160,6 +178,8 @@ func (s *Server) writeAsDesign(w http.ResponseWriter, page, size int, res []Reso
 	})
 }
 
+// handleSummary requires a repeated singular clusterId and answers 400 without
+// one, unlike its sibling above which takes a JSON array under clusterIds.
 func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
 	if len(r.URL.Query()["clusterId"]) == 0 {
 		writeError(w, http.StatusBadRequest, "clusterIds is required")
@@ -210,6 +230,7 @@ func (s *Server) handlePatternByID(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, "design not found")
 }
 
+// handleEnvironments requires orgId, as the real handler does.
 func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("orgId") == "" {
 		writeError(w, http.StatusBadRequest, "orgId is required")
@@ -220,6 +241,8 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleWorkspaces requires orgId, accepting orgID as the deprecated spelling
+// the real handler still honours.
 func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if q.Get("orgId") == "" && q.Get("orgID") == "" {
@@ -231,6 +254,13 @@ func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleOrgs emits both key spellings, as Meshery does here and nowhere else.
+//
+// Meshery: OrganizationsPage has a custom MarshalJSON
+// (server/models/organization.go:31-42) that emits totalCount and total_count,
+// and pageSize and page_size, so consumers reading either spelling keep working
+// through the deprecation window. A client that reads only total_count works
+// here and breaks on every other list endpoint.
 func (s *Server) handleOrgs(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"page":          0,

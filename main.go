@@ -1,3 +1,8 @@
+// Command meshery-mcp-poc is a minimal read-only MCP server for Meshery.
+//
+// It speaks the Model Context Protocol over stdio (default) or Streamable HTTP
+// and exposes read-only tools and a resource against a local Meshery Server. No
+// mutating endpoints are registered and Secrets are never surfaced.
 package main
 
 import (
@@ -41,7 +46,8 @@ type ListContextsInput struct {
 
 type ContextSummary struct {
 	Name string `json:"name"`
-
+	// ClusterID is the Kubernetes server ID, the value MeshSync keys resources
+	// on and the one the cluster tools and resources expect.
 	ClusterID    string `json:"clusterId"`
 	ConnectionID string `json:"connectionId"`
 	ContextID    string `json:"contextId"`
@@ -85,7 +91,10 @@ type ListConnOutput struct {
 
 func main() {
 	transport := flag.String("transport", "stdio", "transport to serve: stdio or http")
-
+	// Loopback by default. This server acts with the user's Meshery credentials,
+	// and the SDK's DNS-rebinding guard only engages when the accepting local
+	// address is loopback, so a wildcard bind would let any host on the network
+	// drive it. Overriding this exposes those credentials to that network.
 	addr := flag.String("addr", "127.0.0.1:8080", "listen address for the http (streamable) transport")
 	flag.Parse()
 
@@ -100,7 +109,9 @@ func main() {
 			log.Fatalf("server: %v", err)
 		}
 	case "http":
-
+		// Streamable HTTP (spec 2025-03-26), the transport that superseded the
+		// old HTTP+SSE one. A fresh server is built per session, and Origin is
+		// validated to guard against DNS-rebinding.
 		handler := mcp.NewStreamableHTTPHandler(
 			func(*http.Request) *mcp.Server { return newServer(c) },
 			&mcp.StreamableHTTPOptions{CrossOriginProtection: http.NewCrossOriginProtection()},
@@ -114,7 +125,12 @@ func main() {
 	}
 }
 
+// newServer builds the MCP server with its read-only tools and resource
+// registered against the given Meshery client. Kept separate from main so tests
+// can build it against a mock client.
 func newServer(c *meshery.Client) *mcp.Server {
+	// Both handlers must be set for the server to advertise
+	// capabilities.resources.subscribe.
 	subs := newSubscriptions()
 	s := mcp.NewServer(&mcp.Implementation{Name: "meshery-mcp-poc", Version: "0.1.0"}, &mcp.ServerOptions{
 		SubscribeHandler: func(_ context.Context, req *mcp.SubscribeRequest) error {

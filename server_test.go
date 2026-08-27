@@ -24,6 +24,7 @@ func mockMeshery() *httptest.Server {
 	})
 	mux.HandleFunc("/api/system/meshsync/resources/summary", func(w http.ResponseWriter, r *http.Request) {
 		if len(r.URL.Query()["clusterId"]) == 0 {
+			// Mirror the real handler, which answers 400 without a cluster.
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":"clusterIds is required"}`))
 			return
@@ -38,6 +39,9 @@ func mockMeshery() *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
+// TestServerEndToEnd wires the MCP server to a client over the SDK's in-memory
+// transport and drives it against a mock Meshery, exercising the full loop:
+// tools/call, structured output, Secret exclusion, and resources/read.
 func TestServerEndToEnd(t *testing.T) {
 	backend := mockMeshery()
 	defer backend.Close()
@@ -90,6 +94,8 @@ func TestServerEndToEnd(t *testing.T) {
 		t.Fatalf("resource read = %+v", rr.Contents)
 	}
 
+	// The contexts tool is the entry point for every cluster-scoped call, so it
+	// must surface the Kubernetes server ID distinctly from the other two ids.
 	res, err = cs.CallTool(ctx, &mcp.CallToolParams{Name: "meshery_list_kubernetes_contexts"})
 	if err != nil {
 		t.Fatal(err)
@@ -100,6 +106,8 @@ func TestServerEndToEnd(t *testing.T) {
 	}
 }
 
+// TestSecretKindIsRefusedThroughTheTool checks the refusal survives the MCP
+// layer as a tool error the model can read, rather than an unfiltered listing.
 func TestSecretKindIsRefusedThroughTheTool(t *testing.T) {
 	backend := mockMeshery()
 	defer backend.Close()
@@ -120,6 +128,8 @@ func TestSecretKindIsRefusedThroughTheTool(t *testing.T) {
 	}
 }
 
+// TestEmptyTemplateVariablesAreRejected pins that an empty variable does not
+// widen a scoped read to every cluster or namespace.
 func TestEmptyTemplateVariablesAreRejected(t *testing.T) {
 	backend := mockMeshery()
 	defer backend.Close()

@@ -16,6 +16,8 @@ func promptSession(t *testing.T) *mcp.ClientSession {
 	return connectTo(t, newServer(meshery.New(backend.URL, "tok", "prov")))
 }
 
+// TestPromptsAreListed checks the guided workflows appear in prompts/list with
+// their declared arguments.
 func TestPromptsAreListed(t *testing.T) {
 	cs := promptSession(t)
 	res, err := cs.ListPrompts(context.Background(), nil)
@@ -44,6 +46,8 @@ func TestPromptsAreListed(t *testing.T) {
 	}
 }
 
+// TestDebugClusterPromptUsesRealURIs checks the guidance names resources this
+// server actually exposes, and warns about the ambiguous evaluated flag.
 func TestDebugClusterPromptUsesRealURIs(t *testing.T) {
 	cs := promptSession(t)
 	res, err := cs.GetPrompt(context.Background(), &mcp.GetPromptParams{
@@ -69,6 +73,8 @@ func TestDebugClusterPromptUsesRealURIs(t *testing.T) {
 	}
 }
 
+// TestReviewDesignPromptRequiresID checks a missing required argument is an
+// error rather than guidance with an empty ID interpolated into it.
 func TestReviewDesignPromptRequiresID(t *testing.T) {
 	cs := promptSession(t)
 	if _, err := cs.GetPrompt(context.Background(), &mcp.GetPromptParams{
@@ -79,6 +85,8 @@ func TestReviewDesignPromptRequiresID(t *testing.T) {
 	}
 }
 
+// TestReviewDesignPromptDefaultsFocus checks the optional focus argument falls
+// back rather than producing an empty instruction.
 func TestReviewDesignPromptDefaultsFocus(t *testing.T) {
 	cs := promptSession(t)
 	res, err := cs.GetPrompt(context.Background(), &mcp.GetPromptParams{
@@ -97,6 +105,7 @@ func TestReviewDesignPromptDefaultsFocus(t *testing.T) {
 	}
 }
 
+// TestCompareDesignsPromptNeedsBoth checks both IDs are required.
 func TestCompareDesignsPromptNeedsBoth(t *testing.T) {
 	cs := promptSession(t)
 	if _, err := cs.GetPrompt(context.Background(), &mcp.GetPromptParams{

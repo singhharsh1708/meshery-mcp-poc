@@ -7,6 +7,9 @@ import (
 	"testing"
 )
 
+// TestGetClusterTopologyExcludesSecrets pins that the asDesign path filters
+// Secret components, the same as the flat resource list does. The two paths
+// return components and rows separately, so each needs its own guard.
 func TestGetClusterTopologyExcludesSecrets(t *testing.T) {
 	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"totalCount":3,"design":{"name":"cluster","schemaVersion":"v1beta1",
@@ -36,6 +39,8 @@ func TestGetClusterTopologyExcludesSecrets(t *testing.T) {
 	}
 }
 
+// TestGetDesignTopologyExcludesSecrets covers the same guarantee on the design
+// path.
 func TestGetDesignTopologyExcludesSecrets(t *testing.T) {
 	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id":"d1","name":"d","pattern_file":{"name":"d","schemaVersion":"v1beta1",
@@ -59,6 +64,9 @@ func TestGetDesignTopologyExcludesSecrets(t *testing.T) {
 	}
 }
 
+// TestGetClusterTopologyEvaluatedIsFalseWithoutEdges pins the ambiguous-empty
+// case: Meshery returns 200 with an un-evaluated design when evaluation fails,
+// and that must not be reported as a healthy empty graph.
 func TestGetClusterTopologyEvaluatedIsFalseWithoutEdges(t *testing.T) {
 	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"totalCount":1,"design":{"name":"c","components":[
@@ -75,6 +83,8 @@ func TestGetClusterTopologyEvaluatedIsFalseWithoutEdges(t *testing.T) {
 	}
 }
 
+// TestGetClusterTopologySendsAsDesignAndClusterIDs is a positive control on the
+// query: without it, dropping either parameter would go unnoticed.
 func TestGetClusterTopologySendsAsDesignAndClusterIDs(t *testing.T) {
 	var raw string
 	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -89,12 +99,14 @@ func TestGetClusterTopologySendsAsDesignAndClusterIDs(t *testing.T) {
 	if !strings.Contains(raw, "asDesign=true") {
 		t.Errorf("asDesign not sent: %s", raw)
 	}
-
+	// clusterIds must be a JSON-encoded array, not a repeated parameter.
 	if !strings.Contains(raw, `clusterIds=%5B%22c1%22%5D`) {
 		t.Errorf("clusterIds not sent as a JSON array: %s", raw)
 	}
 }
 
+// TestListWorkloadsSendsFilters is the positive control the workloads resource
+// lacked: a dropped namespace or cluster filter would otherwise still pass.
 func TestListWorkloadsSendsFilters(t *testing.T) {
 	var raw string
 	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -119,6 +131,8 @@ func TestListWorkloadsSendsFilters(t *testing.T) {
 	}
 }
 
+// TestGetDesignTopologyRequiresID checks the guard rather than sending an
+// empty path segment to Meshery.
 func TestGetDesignTopologyRequiresID(t *testing.T) {
 	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("no request should be made without a design id")
@@ -130,6 +144,8 @@ func TestGetDesignTopologyRequiresID(t *testing.T) {
 	}
 }
 
+// TestGetDesignTopologyUsesTheID confirms the id reaches Meshery in the path,
+// escaped.
 func TestGetDesignTopologyUsesTheID(t *testing.T) {
 	var path string
 	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
