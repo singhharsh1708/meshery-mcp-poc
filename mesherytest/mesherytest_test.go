@@ -723,13 +723,21 @@ func TestGarbagePaginationDoesNotPanic(t *testing.T) {
 		"page=&pagesize=",
 		"pagesize=0",
 		"page=2147483647&pagesize=2147483647",
+		// These overflow page*pageSize on a 64-bit int. The third wraps the
+		// product negative, which reached a slice bounds panic before the
+		// arithmetic compared before multiplying.
+		"page=1&pagesize=9223372036854775807",
+		"page=2&pagesize=4611686018427387904",
+		"page=4611686018427387904&pagesize=2",
 	} {
 		req, _ := http.NewRequest(http.MethodGet, s.URL()+"/api/pattern?"+q, nil)
 		req.AddCookie(&http.Cookie{Name: "token", Value: s.Token})
 		req.AddCookie(&http.Cookie{Name: "meshery-provider", Value: s.Provider})
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			t.Fatalf("%s: %v", q, err)
+			// A panic in the handler closes the connection, so a transport
+			// error here means the fake crashed rather than answered.
+			t.Fatalf("%s: handler did not answer: %v", q, err)
 		}
 		resp.Body.Close()
 		if resp.StatusCode >= 500 {

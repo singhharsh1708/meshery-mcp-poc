@@ -250,12 +250,16 @@ func paginate(total, page, pageSize int) (start, end int) {
 	if pageSize <= 0 {
 		pageSize = defaultPageSize
 	}
-	start = page * pageSize
-	if start > total {
-		start = total
+	// Compare before multiplying. page * pageSize overflows int for large
+	// values a confused client can send, and an overflowed product can land
+	// negative, which would be a slice bounds panic inside someone else's test
+	// run rather than an empty page.
+	if page > total/pageSize {
+		return total, total
 	}
+	start = page * pageSize
 	end = start + pageSize
-	if end > total {
+	if end > total || end < 0 {
 		end = total
 	}
 	return start, end

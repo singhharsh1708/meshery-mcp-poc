@@ -253,9 +253,20 @@ func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleOrgs emits both key spellings, as Meshery does here and nowhere else.
+//
+// Meshery: OrganizationsPage has a custom MarshalJSON
+// (server/models/organization.go:31-42) that emits totalCount and total_count,
+// and pageSize and page_size, so consumers reading either spelling keep working
+// through the deprecation window. A client that reads only total_count works
+// here and breaks on every other list endpoint.
 func (s *Server) handleOrgs(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"page": 0, "pageSize": 25, "total_count": 1,
+		"page":          0,
+		"pageSize":      25,
+		"page_size":     25,
+		"totalCount":    1,
+		"total_count":   1,
 		"organizations": []map[string]string{{"id": s.data.OrgID, "name": "Default Org"}},
 	})
 }
