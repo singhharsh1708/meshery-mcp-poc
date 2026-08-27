@@ -61,17 +61,15 @@ func TestListKubernetesResourcesExcludesSecrets(t *testing.T) {
 			t.Fatalf("Secret was not excluded: %+v", out.Resources)
 		}
 	}
-	// TotalCount must come down with the filtered row, or the count and the
-	// list disagree and a model reports a resource it was never shown.
+
 	if out.TotalCount != 1 {
 		t.Errorf("TotalCount = %d, want 1 after excluding the Secret", out.TotalCount)
 	}
-	// Scoping the read to a cluster is mandatory: the handler filters with
-	// cluster_id IN (?), so an absent value returns nothing at all.
+
 	if !strings.Contains(rawQuery, `clusterIds=%5B%22c1%22%5D`) {
 		t.Errorf("clusterIds not sent as a JSON array: %s", rawQuery)
 	}
-	// The client must never request the columns that carry Secret payloads.
+
 	for _, bad := range []string{"spec=", "status=", "labels=", "annotations="} {
 		if strings.Contains(rawQuery, bad) {
 			t.Errorf("client leaked query param %q: %s", bad, rawQuery)
@@ -79,9 +77,6 @@ func TestListKubernetesResourcesExcludesSecrets(t *testing.T) {
 	}
 }
 
-// TestListKubernetesResourcesRefusesSecretKind pins that asking for Secrets is
-// refused outright. Previously the kind filter was silently dropped, so the
-// request widened to every other kind and returned that as the answer.
 func TestListKubernetesResourcesRefusesSecretKind(t *testing.T) {
 	called := false
 	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -105,9 +100,6 @@ func TestListKubernetesResourcesRefusesSecretKind(t *testing.T) {
 	}
 }
 
-// TestListKubernetesResourcesRequiresCluster guards the empty IN clause: an
-// absent cluster id makes the handler match zero rows, which reads as an empty
-// cluster rather than a mistake.
 func TestListKubernetesResourcesRequiresCluster(t *testing.T) {
 	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("no request should be made without a cluster id")
@@ -119,9 +111,6 @@ func TestListKubernetesResourcesRequiresCluster(t *testing.T) {
 	}
 }
 
-// TestGetMeshSyncSummaryRequiresClusterAndSpelling covers the parameter name
-// that differs from its sibling endpoint: summary takes a repeated singular
-// clusterId, not the JSON-encoded clusterIds array.
 func TestGetMeshSyncSummaryRequiresClusterAndSpelling(t *testing.T) {
 	var rawQuery string
 	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -144,8 +133,6 @@ func TestGetMeshSyncSummaryRequiresClusterAndSpelling(t *testing.T) {
 	}
 }
 
-// TestListKubernetesContextsParsesIdentifiers pins that the three identifiers
-// stay distinct, since conflating them is the main way these tools go wrong.
 func TestListKubernetesContextsParsesIdentifiers(t *testing.T) {
 	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"page":0,"pageSize":25,"totalCount":1,"contexts":[

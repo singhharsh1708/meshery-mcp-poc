@@ -10,8 +10,6 @@ import subprocess
 import sys
 import time
 
-# Seconds to pause between steps, so the session is readable while it runs.
-# Set DEMO_PACE=0 for a fast run.
 PACE = float(os.environ.get("DEMO_PACE", "0.8"))
 
 BIN = sys.argv[1] if len(sys.argv) > 1 else "./meshery-mcp-poc"
@@ -26,7 +24,6 @@ proc = subprocess.Popen(
 )
 
 _id = 0
-
 
 def call(method, params=None, note=None):
     global _id
@@ -51,14 +48,12 @@ def call(method, params=None, note=None):
     time.sleep(PACE)
     return resp
 
-
 def notify(method, params=None):
     req = {"jsonrpc": "2.0", "method": method}
     if params is not None:
         req["params"] = params
     proc.stdin.write(json.dumps(req) + "\n")
     proc.stdin.flush()
-
 
 print("=" * 72)
 print("meshery-mcp-poc :: live MCP session over stdio")

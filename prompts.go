@@ -8,7 +8,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// userMessage builds a single-turn prompt result.
 func userMessage(desc, text string) *mcp.GetPromptResult {
 	return &mcp.GetPromptResult{
 		Description: desc,
@@ -23,9 +22,6 @@ func arg(name, desc string, required bool) *mcp.PromptArgument {
 	return &mcp.PromptArgument{Name: name, Description: desc, Required: required}
 }
 
-// addPrompts registers guided read-only workflows. Each one names the tools and
-// resources this server actually exposes, so the model is steered onto real
-// capabilities rather than inventing calls.
 func addPrompts(s *mcp.Server) {
 	s.AddPrompt(&mcp.Prompt{
 		Name:        "debug_cluster",

@@ -1,7 +1,5 @@
 //go:build ignore
 
-// Command mock_meshery serves the Meshery REST endpoints this server calls,
-// with realistic payloads, so the demo can run without a cluster.
 package main
 
 import (
@@ -37,7 +35,6 @@ func main() {
 
 	mux.HandleFunc("/api/system/meshsync/resources/summary", func(w http.ResponseWriter, r *http.Request) {
 		if len(r.URL.Query()["clusterId"]) == 0 {
-			// Mirrors the real handler, which answers 400 without a cluster.
 			w.WriteHeader(http.StatusBadRequest)
 			write(w, `{"error":"clusterIds is required"}`)
 			return
@@ -48,7 +45,6 @@ func main() {
 
 	mux.HandleFunc("/api/system/meshsync/resources", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("asDesign") == "true" {
-			// Note the Secret: the server must filter it out of the graph.
 			write(w, `{"totalCount":4,"design":{"name":"minikube","schemaVersion":"designs.meshery.io/v1beta1",
 				"components":[
 					{"id":"n1","displayName":"productpage","component":{"kind":"Deployment","version":"apps/v1"},"model":{"name":"kubernetes"}},
@@ -67,12 +63,9 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/pattern/", func(w http.ResponseWriter, r *http.Request) {
-		// Current Meshery returns the design file as a JSON *string* under patternFile.
 		write(w, `{"id":"d-1001","name":"bookinfo","patternFile":"{\"name\":\"bookinfo\",\"schemaVersion\":\"designs.meshery.io/v1beta1\",\"components\":[{\"id\":\"c1\",\"displayName\":\"productpage\",\"component\":{\"kind\":\"Deployment\",\"version\":\"apps/v1\"}},{\"id\":\"c2\",\"displayName\":\"tls-cert\",\"component\":{\"kind\":\"Secret\",\"version\":\"v1\"}}],\"relationships\":[{\"id\":\"r1\",\"kind\":\"edge\"}]}"}`)
 	})
 
-	// Readiness probe, deliberately outside the request log so it does not
-	// look like an unauthenticated call in a demo recording.
 	root := http.NewServeMux()
 	root.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -85,7 +78,6 @@ func main() {
 	}
 }
 
-// logCookies records that the server authenticates the way Meshery expects.
 func logCookies(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok, _ := r.Cookie("token")

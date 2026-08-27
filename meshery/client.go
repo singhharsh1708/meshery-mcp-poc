@@ -14,10 +14,6 @@ import (
 	"time"
 )
 
-// Client is a small read-only client for a local Meshery Server. Meshery's
-// AuthMiddleware authenticates data routes with two cookies (token and
-// meshery-provider) written by `mesheryctl system login`; there is no
-// Authorization: Bearer path for these routes.
 type Client struct {
 	baseURL  string
 	token    string
@@ -25,9 +21,6 @@ type Client struct {
 	http     *http.Client
 }
 
-// NewFromEnv reads MESHERY_URL (default http://localhost:9081) and
-// MESHERY_TOKEN_PATH (default ~/.meshery/auth.json, the JSON map written by
-// `mesheryctl system login`: {"token":"...","meshery-provider":"..."}).
 func NewFromEnv() (*Client, error) {
 	base := os.Getenv("MESHERY_URL")
 	if base == "" {
@@ -49,8 +42,6 @@ func NewFromEnv() (*Client, error) {
 	return New(base, tok["token"], tok["meshery-provider"]), nil
 }
 
-// New builds a client for a base URL and the two auth cookie values. Used by
-// NewFromEnv and by tests that point at a mock server.
 func New(baseURL, token, provider string) *Client {
 	return &Client{
 		baseURL:  baseURL,
@@ -77,8 +68,6 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		// Include Meshery's own message. Without it the model receives a bare
-		// status line and cannot tell a missing filter from an expired session.
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		detail := strings.TrimSpace(string(body))
 		if detail == "" {
@@ -89,13 +78,11 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-// Pattern is a Meshery design summary (GET /api/pattern).
 type Pattern struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
 
-// PatternsResponse wraps GET /api/pattern. Wire tags are camelCase.
 type PatternsResponse struct {
 	Page       uint      `json:"page"`
 	PageSize   uint      `json:"pageSize"`
@@ -103,7 +90,6 @@ type PatternsResponse struct {
 	Patterns   []Pattern `json:"patterns"`
 }
 
-// ListDesigns lists Meshery designs via GET /api/pattern.
 func (c *Client) ListDesigns(ctx context.Context, search string, page, pageSize int) (*PatternsResponse, error) {
 	if pageSize == 0 {
 		pageSize = 10
@@ -123,14 +109,12 @@ type k8sMeta struct {
 	Namespace string `json:"namespace"`
 }
 
-// K8sResource is a MeshSync-discovered Kubernetes object (subset).
 type K8sResource struct {
 	Kind       string  `json:"kind"`
 	APIVersion string  `json:"apiVersion"`
 	Metadata   k8sMeta `json:"metadata"`
 }
 
-// MeshSyncResponse wraps GET /api/system/meshsync/resources. camelCase tags.
 type MeshSyncResponse struct {
 	Page       int           `json:"page"`
 	PageSize   int           `json:"pageSize"`
@@ -138,21 +122,8 @@ type MeshSyncResponse struct {
 	Resources  []K8sResource `json:"resources"`
 }
 
-// ErrSecretKindRefused is returned when a caller asks specifically for Secrets.
-// Dropping the filter instead would return every other kind as though it were
-// the answer, which is a worse failure than refusing.
 var ErrSecretKindRefused = errors.New("this server does not return Kubernetes Secrets")
 
-// ListKubernetesResources lists MeshSync-discovered resources for a cluster.
-//
-// clusterID is the Kubernetes server ID, which is what MeshSync keys resources
-// on. It is required: the handler filters with `cluster_id IN (?)` against
-// whatever it is given, so omitting it yields an empty IN clause and therefore
-// zero rows rather than everything.
-//
-// Security: it never requests spec/status/labels/annotations, so the server
-// omits those columns and Secret data / last-applied-config are never
-// serialized; Secrets are excluded outright as a second layer.
 func (c *Client) ListKubernetesResources(ctx context.Context, clusterID, kind, namespace string, page, pageSize int) (*MeshSyncResponse, error) {
 	if kind == "Secret" {
 		return nil, ErrSecretKindRefused
@@ -183,8 +154,6 @@ func (c *Client) ListKubernetesResources(ctx context.Context, clusterID, kind, n
 	return &out, nil
 }
 
-// excludeSecretResources drops Secret rows and reduces TotalCount to match, so
-// the count and the list cannot disagree.
 func excludeSecretResources(out *MeshSyncResponse) {
 	filtered := out.Resources[:0]
 	for _, r := range out.Resources {
@@ -199,9 +168,6 @@ func excludeSecretResources(out *MeshSyncResponse) {
 	out.Resources = filtered
 }
 
-// setClusterIDs writes the JSON-encoded array form that
-// /api/system/meshsync/resources expects. Note the summary endpoint next door
-// spells the same filter differently; see GetMeshSyncSummary.
 func setClusterIDs(q url.Values, clusterIDs ...string) error {
 	ids, err := json.Marshal(clusterIDs)
 	if err != nil {
@@ -211,13 +177,6 @@ func setClusterIDs(q url.Values, clusterIDs ...string) error {
 	return nil
 }
 
-// GetMeshSyncSummary returns the raw MeshSync resource summary
-// (GET /api/system/meshsync/resources/summary).
-//
-// This endpoint requires at least one cluster and answers 400 without one. It
-// also spells the parameter differently from its sibling: a repeated singular
-// `clusterId`, rather than the JSON-encoded `clusterIds` array that
-// /api/system/meshsync/resources parses.
 func (c *Client) GetMeshSyncSummary(ctx context.Context, clusterIDs ...string) (json.RawMessage, error) {
 	if len(clusterIDs) == 0 {
 		return nil, fmt.Errorf("at least one cluster id is required; list the Kubernetes contexts first to obtain one")
@@ -233,10 +192,6 @@ func (c *Client) GetMeshSyncSummary(ctx context.Context, clusterIDs ...string) (
 	return raw, c.get(ctx, "/api/system/meshsync/resources/summary", q, &raw)
 }
 
-// KubernetesContext ties together the three identifiers Meshery uses for a
-// cluster, which are easy to confuse: ID addresses a design deployment target,
-// ConnectionID addresses the connection record, and KubernetesServerID is what
-// MeshSync keys discovered resources on.
 type KubernetesContext struct {
 	ID                 string `json:"id"`
 	Name               string `json:"name"`
@@ -246,7 +201,6 @@ type KubernetesContext struct {
 	KubernetesServerID string `json:"kubernetesServerId"`
 }
 
-// ContextsResponse wraps GET /api/system/kubernetes/contexts.
 type ContextsResponse struct {
 	Page       uint64               `json:"page"`
 	PageSize   uint64               `json:"pageSize"`
@@ -254,9 +208,6 @@ type ContextsResponse struct {
 	Contexts   []*KubernetesContext `json:"contexts"`
 }
 
-// ListKubernetesContexts lists the Kubernetes contexts Meshery knows about.
-// This is the only call that yields a Kubernetes server ID, so it is the entry
-// point for every cluster-scoped tool and resource here.
 func (c *Client) ListKubernetesContexts(ctx context.Context, page, pageSize int) (*ContextsResponse, error) {
 	if pageSize == 0 {
 		pageSize = 25
@@ -268,7 +219,6 @@ func (c *Client) ListKubernetesContexts(ctx context.Context, page, pageSize int)
 	return &out, c.get(ctx, "/api/system/kubernetes/contexts", q, &out)
 }
 
-// Connection is a Meshery connection (subset of GET /api/integrations/connections).
 type Connection struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
@@ -276,7 +226,6 @@ type Connection struct {
 	Status string `json:"status"`
 }
 
-// ConnectionsResponse wraps GET /api/integrations/connections. camelCase tags.
 type ConnectionsResponse struct {
 	Page        int          `json:"page"`
 	PageSize    int          `json:"pageSize"`
@@ -284,8 +233,6 @@ type ConnectionsResponse struct {
 	Connections []Connection `json:"connections"`
 }
 
-// ListKubernetesConnections lists the Kubernetes cluster connections Meshery is
-// managing via GET /api/integrations/connections?kind=kubernetes. Read-only.
 func (c *Client) ListKubernetesConnections(ctx context.Context, page, pageSize int) (*ConnectionsResponse, error) {
 	if pageSize == 0 {
 		pageSize = 25

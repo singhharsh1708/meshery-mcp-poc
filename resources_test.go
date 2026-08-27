@@ -52,8 +52,6 @@ func connectTo(t *testing.T, s *mcp.Server) *mcp.ClientSession {
 	return cs
 }
 
-// TestResourceTemplatesAreListed checks the templated resources are advertised
-// under resources/templates/list.
 func TestResourceTemplatesAreListed(t *testing.T) {
 	backend := mockTopologyMeshery(t)
 	defer backend.Close()
@@ -80,8 +78,6 @@ func TestResourceTemplatesAreListed(t *testing.T) {
 	}
 }
 
-// TestReadClusterTopology reads a templated URI and checks the cluster id is
-// extracted and the graph is returned with nodes and edges.
 func TestReadClusterTopology(t *testing.T) {
 	backend := mockTopologyMeshery(t)
 	defer backend.Close()
@@ -107,8 +103,6 @@ func TestReadClusterTopology(t *testing.T) {
 	}
 }
 
-// TestReadWorkloadsExcludesSecrets checks the namespaced workloads resource
-// keeps the Secret exclusion the tools have.
 func TestReadWorkloadsExcludesSecrets(t *testing.T) {
 	backend := mockTopologyMeshery(t)
 	defer backend.Close()
@@ -129,7 +123,6 @@ func TestReadWorkloadsExcludesSecrets(t *testing.T) {
 	}
 }
 
-// TestReadDesignTopology reads the design component graph.
 func TestReadDesignTopology(t *testing.T) {
 	backend := mockTopologyMeshery(t)
 	defer backend.Close()
@@ -146,8 +139,6 @@ func TestReadDesignTopology(t *testing.T) {
 	}
 }
 
-// TestReadUnknownResourceErrors checks a URI that matches no template or
-// resource is reported as an error rather than empty content.
 func TestReadUnknownResourceErrors(t *testing.T) {
 	backend := mockTopologyMeshery(t)
 	defer backend.Close()
@@ -160,8 +151,6 @@ func TestReadUnknownResourceErrors(t *testing.T) {
 	}
 }
 
-// TestSubscribeRoundTrip checks the server advertises resource subscriptions
-// and accepts subscribe and unsubscribe.
 func TestSubscribeRoundTrip(t *testing.T) {
 	backend := mockTopologyMeshery(t)
 	defer backend.Close()
@@ -177,8 +166,6 @@ func TestSubscribeRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSubscriptionsRefCount checks repeat subscribes to the same URI are only
-// dropped once the last unsubscribe arrives.
 func TestSubscriptionsRefCount(t *testing.T) {
 	subs := newSubscriptions()
 	subs.add("a")
