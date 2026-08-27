@@ -192,10 +192,11 @@ A hand-written mock returns the shape the code under test expects, so it agrees 
 | Mutation applied to the client | Hand-written MCP mock | Client tests | `mesherytest` |
 |---|---|---|---|
 | cluster filter dropped from the query | passes | catches | catches |
-| pages requested one-based | passes | passes | catches |
+| pages requested one-based | passes | **passes** | catches |
+| page size spelled `pageSize` not `pagesize` | passes | **passes** | catches |
 | bearer header instead of the cookies | passes | catches | catches |
 
-The middle row is the one that matters. Meshery's pagination is zero-based on both of its offset paths, so a client that opens at page 1 skips the first page of every list it reads, and nothing in a suite written without prior knowledge of that catches it. The other two rows are caught by a client test only because a positive control for that exact query was hand-written after the bug had already been found the hard way. The package turns each of those controls into one line, so the next author does not have to know the trap first.
+The two middle rows are the ones that matter. Meshery's pagination is zero-based on both of its offset paths, so a client that opens at page 1 skips the first page of every list it reads. And the page-size parameter is spelled differently per endpoint: most handlers read only the lowercase `pagesize` and ignore `pageSize` without saying so. Nothing in a suite written without prior knowledge of either catches them. The other two rows are caught by a client test only because a positive control for that exact query was hand-written after the bug had already been found the hard way. The package turns each of those controls into one line, so the next author does not have to know the trap first.
 
 ## Topology
 

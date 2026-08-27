@@ -44,14 +44,15 @@ fake-backed tests.
 | Mutation applied to the client | Hand-written MCP mock | Client tests | This package |
 |---|---|---|---|
 | cluster filter dropped from the query | passes | catches | catches |
-| pages requested one-based | passes | passes | catches |
+| pages requested one-based | passes | **passes** | catches |
+| page size spelled `pageSize` not `pagesize` | passes | **passes** | catches |
 | bearer header instead of the cookies | passes | catches | catches |
 
-The middle row is the interesting one: nothing in a suite written without prior
-knowledge of the trap catches it. The other two are caught by a client test only
-because a positive control for that exact query was hand-written after the bug
-was already known. This package makes those controls one line each, so the next
-author does not have to know the trap first.
+The two middle rows are the interesting ones: nothing in a suite written without
+prior knowledge of the trap catches either. The other two are caught by a client
+test only because a positive control for that exact query was hand-written after
+the bug had already been found the hard way. This package makes those controls
+one line each, so the next author does not have to know the trap first.
 
 Reproduce with `./mutation_check.sh`.
 
@@ -90,9 +91,17 @@ without it, so the two spellings are not interchangeable either.
 
 **Pagination.** Zero-based on both of Meshery's offset computations
 (`offset = page * limit` and `offset := (page) * pageSize`). Negative pages are
-clamped to 0, the default page size is 25, `pageSize` is canonical with
-`pagesize` accepted as the legacy spelling, and `pageSize=all` skips the limit
+clamped to 0, the default page size is 25, and `pageSize=all` skips the limit
 entirely rather than falling back to the default.
+
+**The page-size parameter is spelled differently per endpoint, silently.** Only
+`getPaginationParams` and `GetConnections` read the camelCase `pageSize` and fall
+back to `pagesize`. Most handlers, including the ones behind contexts, designs,
+environments, workspaces and organizations, read `q.Get("pagesize")` and nothing
+else, so a client sending `pageSize` there has it ignored and gets the default of
+25 with no error. The fake reproduces the spelling each endpoint actually reads
+rather than accepting both everywhere, because accepting both is precisely how a
+mock hides this. `AssertPageSizeSpelling` names the spelling that endpoint reads.
 
 **Designs.** `patternFile` is a JSON *string* under a camelCase key. Decoding it
 as a nested object, or reading only the older `pattern_file`, yields an empty
@@ -120,6 +129,7 @@ exempting the whole prefix would let an unauthenticated write through.
 | `AssertAuthenticated` | header auth, missing provider cookie |
 | `AssertClusterScoped` | absent filter, bare id where an array is required, wrong spelling per endpoint |
 | `AssertZeroBasedPaging` | a client that opens at page 1 |
+| `AssertPageSizeSpelling` | `pageSize` sent where only `pagesize` is read |
 | `AssertQuery` / `AssertNoQuery` | a dropped filter; a field that should never be requested |
 | `AssertCalled` / `AssertNotCalled` | an endpoint skipped; a mutating route touched by a read-only server |
 

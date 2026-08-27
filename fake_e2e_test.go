@@ -104,6 +104,12 @@ func TestMCPServerAgainstFakeMeshery(t *testing.T) {
 	fake.AssertZeroBasedPaging(t, "/api/pattern")
 	fake.AssertQuery(t, "/api/system/meshsync/resources", "asDesign", "true")
 
+	// Most Meshery endpoints read only the lowercase page-size spelling and
+	// ignore the camelCase one without saying so.
+	for _, path := range []string{"/api/pattern", "/api/system/kubernetes/contexts"} {
+		fake.AssertPageSizeSpelling(t, path)
+	}
+
 	for _, field := range []string{"spec", "status", "labels", "annotations"} {
 		fake.AssertNoQuery(t, "/api/system/meshsync/resources", field)
 	}

@@ -213,3 +213,27 @@ func defaultOr(v, fallback string) string {
 	}
 	return v
 }
+
+// AssertPageSizeSpelling fails if the last request to path spelled its page size
+// in a way that endpoint does not read.
+//
+// Meshery is inconsistent here and fails silently: most handlers read only the
+// lowercase pagesize, so a client sending pageSize gets the default of 25 and no
+// error. Only getPaginationParams and GetConnections read the camelCase spelling
+// at all. Sending the lowercase spelling is safe everywhere the fake serves,
+// which is what this recommends when it fails.
+func (s *Server) AssertPageSizeSpelling(t T, path string) {
+	t.Helper()
+	r := s.lastTo(t, path)
+
+	camel, hasCamel := r.Query["pageSize"]
+	_, hasLower := r.Query["pagesize"]
+	if !hasCamel && !hasLower {
+		return
+	}
+	if spellingFor(path) == canonicalFirst || hasLower {
+		return
+	}
+	t.Errorf("%s: sent pageSize=%s, but this endpoint reads only the lowercase pagesize, so that value is ignored and the default of 25 applies. Send pagesize instead, which every endpoint here accepts",
+		path, strings.Join(camel, ","))
+}

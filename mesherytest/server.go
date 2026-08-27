@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -262,13 +263,61 @@ func paginate(total, page, pageSize int) (start, end int) {
 
 const defaultPageSize = 25
 
-// pageParams reads the pagination parameters the way Meshery does: pageSize is
-// canonical, pagesize is accepted as the legacy spelling.
-func pageParams(q url.Values) (page, pageSize int) {
+// sizeSpelling is how one endpoint spells its page-size parameter. Meshery is
+// not consistent about this, and the inconsistency is silent: an endpoint that
+// reads only the lowercase spelling ignores pageSize entirely and quietly
+// applies its default of 25.
+type sizeSpelling int
+
+const (
+	// lowercaseOnly: the handler reads q.Get("pagesize") and nothing else. This
+	// is the majority, including the contexts, designs, environments, workspaces
+	// and organizations endpoints.
+	lowercaseOnly sizeSpelling = iota
+	// canonicalFirst: the handler reads pageSize and falls back to pagesize.
+	// Only getPaginationParams (server/handlers/utils.go:97-100) and
+	// GetConnections (server/handlers/connections_handlers.go:272-275) do this.
+	canonicalFirst
+)
+
+// pageSizeSpelling records which spelling each endpoint the fake serves actually
+// reads, taken from the handler behind its route.
+var pageSizeSpelling = map[string]sizeSpelling{
+	"/api/system/kubernetes/contexts": lowercaseOnly,  // GetAllContexts, contexts_handler.go:30
+	"/api/pattern":                    lowercaseOnly,  // GetMesheryPatternsHandler, meshery_pattern_handler.go:698
+	"/api/environments":               lowercaseOnly,  // environments_handlers.go:70
+	"/api/workspaces":                 lowercaseOnly,  // workspace_handlers.go:103
+	"/api/identity/orgs":              lowercaseOnly,  // organization_handler.go:19
+	"/api/integrations/connections":   canonicalFirst, // connections_handlers.go:272
+	"/api/system/meshsync/resources":  canonicalFirst, // getPaginationParams, utils.go:97
+	"/api/registry":                   canonicalFirst, // getPaginationParams
+}
+
+// spellingFor returns the page-size spelling for a path, defaulting to the
+// getPaginationParams behaviour for anything unlisted.
+func spellingFor(path string) sizeSpelling {
+	if s, ok := pageSizeSpelling[path]; ok {
+		return s
+	}
+	if strings.HasPrefix(path, "/api/registry") {
+		return canonicalFirst
+	}
+	return canonicalFirst
+}
+
+// pageParams reads the pagination parameters the way the given endpoint does.
+//
+// Passing the spelling per endpoint rather than accepting both everywhere is
+// the point: a client that sends pageSize to an endpoint reading only pagesize
+// gets the default of 25 with no error, and a fake that accepted both would
+// hide exactly that.
+func pageParams(q url.Values, spelling sizeSpelling) (page, pageSize int) {
 	page, _ = strconv.Atoi(q.Get("page"))
-	sizeStr := q.Get("pageSize")
-	if sizeStr == "" {
-		sizeStr = q.Get("pagesize")
+	sizeStr := q.Get("pagesize")
+	if spelling == canonicalFirst {
+		if v := q.Get("pageSize"); v != "" {
+			sizeStr = v
+		}
 	}
 	// Meshery's persisters special-case pageSize=all to fetch every row rather
 	// than applying a limit, so it is not a page size at all.

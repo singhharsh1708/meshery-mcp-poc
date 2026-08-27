@@ -253,22 +253,59 @@ func TestPageOneSkipsTheFirstPage(t *testing.T) {
 	}
 }
 
-// TestLegacyPageSizeSpellingStillWorks pins the fallback, so a client using the
-// older lowercase spelling is not broken by the fake when Meshery accepts it.
-// getPaginationParams reads pageSize first and falls back to pagesize; Meshery's
-// own comment calls the first canonical and the second legacy.
-func TestLegacyPageSizeSpellingStillWorks(t *testing.T) {
+// TestPageSizeSpellingIsPerEndpoint is the trap that a fake accepting both
+// spellings everywhere would hide. Meshery is not consistent: most handlers read
+// only the lowercase pagesize, and there the camelCase pageSize is ignored and
+// the default of 25 quietly applies. Two paths read pageSize first and fall back
+// to pagesize. Nothing errors either way.
+func TestPageSizeSpellingIsPerEndpoint(t *testing.T) {
 	s := mesherytest.New(t)
 
+	// /api/pattern is served by GetMesheryPatternsHandler, which reads
+	// q.Get("pagesize") and nothing else.
 	out := authedGet(t, s, "/api/pattern", "pagesize=1")
 	if n := len(out["patterns"].([]any)); n != 1 {
-		t.Fatalf("pagesize=1 returned %d designs, want 1", n)
+		t.Errorf("lowercase pagesize=1 returned %d designs, want 1", n)
+	}
+	out = authedGet(t, s, "/api/pattern", "pageSize=1")
+	if n := len(out["patterns"].([]any)); n != 2 {
+		t.Errorf("camelCase pageSize=1 returned %d designs, want 2: this endpoint ignores that spelling and applies its default", n)
 	}
 
-	// The canonical spelling wins when both are sent.
-	out = authedGet(t, s, "/api/pattern", "pageSize=2&pagesize=1")
-	if n := len(out["patterns"].([]any)); n != 2 {
-		t.Fatalf("pageSize should take precedence over pagesize, got %d designs, want 2", n)
+	// /api/system/meshsync/resources goes through getPaginationParams, which
+	// reads pageSize first and falls back to pagesize, so both work there.
+	cluster := `clusterIds=["` + s.Data().ClusterID() + `"]`
+	for _, spelling := range []string{"pageSize=1", "pagesize=1"} {
+		out = authedGet(t, s, "/api/system/meshsync/resources", cluster+"&"+spelling)
+		if n := len(out["resources"].([]any)); n != 1 {
+			t.Errorf("%s returned %d resources, want 1: this endpoint reads both spellings", spelling, n)
+		}
+	}
+}
+
+// TestAssertPageSizeSpellingCatchesTheWrongOne checks the assertion fires when a
+// client sends a spelling the endpoint does not read.
+func TestAssertPageSizeSpellingCatchesTheWrongOne(t *testing.T) {
+	s := mesherytest.New(t)
+	authedGet(t, s, "/api/pattern", "pageSize=1")
+
+	failed, msg := (&recorder{}).run(func(tt mesherytest.T) {
+		s.AssertPageSizeSpelling(tt, "/api/pattern")
+	})
+	if !failed {
+		t.Fatal("camelCase pageSize on a lowercase-only endpoint should have been flagged")
+	}
+	if !strings.Contains(msg, "pagesize") {
+		t.Errorf("the failure should name the spelling the endpoint reads, got: %s", msg)
+	}
+
+	// And it passes on the right one.
+	s2 := mesherytest.New(t)
+	authedGet(t, s2, "/api/pattern", "pagesize=1")
+	if failed, msg := (&recorder{}).run(func(tt mesherytest.T) {
+		s2.AssertPageSizeSpelling(tt, "/api/pattern")
+	}); failed {
+		t.Errorf("lowercase pagesize should be accepted here, got: %s", msg)
 	}
 }
 

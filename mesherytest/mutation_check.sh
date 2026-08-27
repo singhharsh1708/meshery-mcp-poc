@@ -18,7 +18,7 @@ verdict() { go test "$@" >/dev/null 2>&1 && echo "passes" || echo "catches"; }
 printf '%-38s %-22s %-14s %s\n' "mutation" "hand-written MCP mock" "client tests" "mesherytest"
 printf '%s\n' "--------------------------------------------------------------------------------------"
 
-for mutation in cluster-filter one-based-paging bearer-header; do
+for mutation in cluster-filter one-based-paging bearer-header pagesize-spelling; do
   cp "$BACKUP" "$CLIENT"
   case "$mutation" in
     cluster-filter)
@@ -27,6 +27,9 @@ for mutation in cluster-filter one-based-paging bearer-header; do
       perl -0pi -e 's/(func \(c \*Client\) ListKubernetesResources\([^)]*\) \(\*MeshSyncResponse, error\) \{)/$1\n\tpage = page + 1/' "$CLIENT" ;;
     bearer-header)
       perl -0pi -e 's/\treq\.AddCookie\(&http\.Cookie\{Name: "token".*\n\treq\.AddCookie\(&http\.Cookie\{Name: "meshery-provider".*\n/\treq.Header.Set("Authorization", "Bearer "+c.token)\n/' "$CLIENT" ;;
+    pagesize-spelling)
+      # The camelCase spelling is silently ignored by /api/pattern.
+      perl -0pi -e 's/q\.Set\("pagesize", strconv\.Itoa\(pageSize\)\)/q.Set("pageSize", strconv.Itoa(pageSize))/' "$CLIENT" ;;
   esac
 
   # The fake-backed tests are hidden while the mock-backed suites run, so each
