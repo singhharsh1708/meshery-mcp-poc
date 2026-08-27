@@ -61,7 +61,8 @@ Reproduce with `./mutation_check.sh`.
 ## What it reproduces
 
 Every behaviour below is taken from a handler in `meshery/meshery` at commit
-`e6ed2de`, cited in `doc.go` next to the code that reproduces it.
+`e6ed2de`. The "Verified against" table further down names the function behind
+each one.
 
 **Authentication.** The two credentials are not symmetric.
 `RemoteProvider.GetToken` reads `req.Cookie("token")` and nothing else, so an
@@ -88,11 +89,10 @@ testing. `WithLocalProvider()` switches to the local provider's behaviour, which
 accepts everything, because that is why a client with broken auth can pass its
 whole suite against a locally started Meshery and fail against a remote one.
 
-Two 401 paths are deliberately not reproduced, both documented in `doc.go`:
-`HandleUnAuthenticated` counts attempts in a cookie and answers 401 once retries
-reach `MaxAuthRetries` (3), and `AuthMiddleware` answers 401 outright on an
-enforced-provider mismatch. Both are states a client reaches only after the ones
-above.
+Two 401 paths are deliberately not reproduced: `HandleUnAuthenticated` counts
+attempts in a cookie and answers 401 once retries reach `MaxAuthRetries` (3), and
+`AuthMiddleware` answers 401 outright on an enforced-provider mismatch. Both are
+states a client reaches only after the ones above.
 
 **Cluster scoping.** `/resources` takes a JSON-encoded `clusterIds` array. Omit
 it and the handler binds an empty slice into `cluster_id IN (?)`, which matches
@@ -149,6 +149,32 @@ Both prefixes count. `registerRegistryRoute` binds every registry subpath at
 and same methods, so the fake serves both and the assertion exempts both. Demanding
 cookies on the alias would fail a client that is doing nothing wrong, which is the
 worst thing an assertion can do.
+
+## Verified against
+
+Checked against `meshery/meshery` at commit `e6ed2de164b42d805b78dd1cdb3c4b415e8686eb`. Line numbers are given against that commit and will drift; the function names are the durable part.
+
+| Behaviour | Where it comes from |
+|---|---|
+| Zero-based pagination, `offset = page * limit` | `getPaginationParams`, `server/handlers/utils.go:116` |
+| Zero-based pagination, `offset := (page) * pageSize` | `models.Paginate`, `server/models/persister_utils.go:10` |
+| `pageSize` canonical, `pagesize` fallback | `server/handlers/utils.go:97-100`, `server/handlers/connections_handlers.go:272-275` |
+| `clusterIds` as a JSON array; absent means no rows, malformed means 400 | `server/handlers/meshsync_handler.go:267-278` |
+| Summary takes a repeated singular `clusterId` and 400s on absence | `server/handlers/meshsync_handler.go:456-463` |
+| Token read from the cookie and nowhere else | `RemoteProvider.GetToken`, `server/models/remote_auth.go:191` |
+| Provider from cookie, else header, else `?provider=` | `resolveProviderName`, `server/handlers/middlewares.go:56-73` |
+| `ErrEmptySession` excluded from the `HandleUnAuthenticated` branch | `server/handlers/middlewares.go:174` |
+| Unauthenticated non-GET answered with a bare 404 | `LoginHandler`, `server/handlers/common_handlers.go:19` |
+| Unauthenticated GET redirected off-host to the provider login | `InitiateLogin`, `server/models/remote_provider.go:685` |
+| Invalid token redirected to `/auth/login` or `/provider` | `HandleUnAuthenticated`, `server/models/remote_provider.go:1049` |
+| 401 after `MaxAuthRetries`, which is 3 | `server/models/remote_auth.go:39` |
+| 401 on an enforced-provider mismatch | `server/handlers/middlewares.go:169` |
+| Local provider accepts anything | `DefaultLocalProvider.GetSession`, `server/models/default_local_provider.go:482` |
+| `patternFile` is a JSON string under a camelCase key | `server/models/meshery_pattern.go:91` |
+| Registry routes bound at `/api/registry` and `/api/meshmodels` alike | `registerRegistryRoute`, `server/router/server.go:24` |
+| `/api/identity/orgs` emits both key casings | `OrganizationsPage.MarshalJSON`, `server/models/organization.go:31-42` |
+
+Two 401 paths are deliberately not reproduced, both listed above: the retry-exhaustion one would make the fake stateful for no gain, and the enforced-provider one is a deployment setting rather than a client mistake. Meshery's `PROVIDER` environment variable, which overrides all three provider channels when set, is likewise not modelled.
 
 ## Assertions
 

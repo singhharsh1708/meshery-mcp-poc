@@ -10,23 +10,12 @@ import (
 	"github.com/singhharsh1708/meshery-mcp-poc/mesherytest"
 )
 
-// TestMCPServerAgainstFakeMeshery drives the whole MCP surface, over the SDK's
-// transport, against the fake Meshery rather than a hand-written mock, and then
-// asserts on what reached Meshery.
-//
-// The distinction matters. A hand-written mock returns the shape the code under
-// test expects, so it agrees with the code even when the code is wrong about
-// the real API. The fake reproduces Meshery's behaviour instead, including the
-// parts that fail silently, so a tool that gets the wire contract wrong comes
-// back empty here the way it would in production.
 func TestMCPServerAgainstFakeMeshery(t *testing.T) {
 	fake := mesherytest.New(t)
 	cs := connectTo(t, newServer(meshery.New(fake.URL(), fake.Token, fake.Provider)))
 	ctx := context.Background()
 	cluster := fake.Data().ClusterID()
 
-	// The contexts tool is the entry point: it is the only call that yields a
-	// Kubernetes server ID, which every cluster-scoped call then needs.
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "meshery_list_kubernetes_contexts"})
 	if err != nil {
 		t.Fatal(err)
@@ -46,8 +35,7 @@ func TestMCPServerAgainstFakeMeshery(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("resources tool errored: %s", got)
 	}
-	// Three of the four seeded resources. Emptiness here would be the silent
-	// failure this package exists to surface.
+
 	if !strings.Contains(got, "productpage") {
 		t.Fatalf("resources tool returned nothing for a populated cluster: %s", got)
 	}
@@ -71,8 +59,6 @@ func TestMCPServerAgainstFakeMeshery(t *testing.T) {
 		}
 	}
 
-	// The templated resources go through the undocumented asDesign path, which
-	// clears the flat resource list and returns a graph instead.
 	rr, err := cs.ReadResource(ctx, &mcp.ReadResourceParams{
 		URI: "meshery://clusters/" + cluster + "/topology",
 	})
@@ -95,8 +81,6 @@ func TestMCPServerAgainstFakeMeshery(t *testing.T) {
 		t.Fatalf("summary resource: %v", err)
 	}
 
-	// Everything above only proves the responses looked right. These prove the
-	// requests were right, which is the half a mock cannot check.
 	fake.AssertAuthenticated(t)
 	fake.AssertClusterScoped(t, "/api/system/meshsync/resources", cluster)
 	fake.AssertClusterScoped(t, "/api/system/meshsync/resources/summary", cluster)
@@ -104,8 +88,6 @@ func TestMCPServerAgainstFakeMeshery(t *testing.T) {
 	fake.AssertZeroBasedPaging(t, "/api/pattern")
 	fake.AssertQuery(t, "/api/system/meshsync/resources", "asDesign", "true")
 
-	// Most Meshery endpoints read only the lowercase page-size spelling and
-	// ignore the camelCase one without saying so.
 	for _, path := range []string{"/api/pattern", "/api/system/kubernetes/contexts"} {
 		fake.AssertPageSizeSpelling(t, path)
 	}
@@ -118,9 +100,6 @@ func TestMCPServerAgainstFakeMeshery(t *testing.T) {
 	}
 }
 
-// TestSecretKindIsRefusedBeforeAnyRequest checks the refusal happens in the
-// server, not by filtering a response. Dropping the filter and returning every
-// other kind would look like a successful answer to the model.
 func TestSecretKindIsRefusedBeforeAnyRequest(t *testing.T) {
 	fake := mesherytest.New(t)
 	cs := connectTo(t, newServer(meshery.New(fake.URL(), fake.Token, fake.Provider)))

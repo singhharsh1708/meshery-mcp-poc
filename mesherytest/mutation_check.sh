@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# Applies each mutation to the Meshery client, runs three suites against it, and
-# reports which ones notice. Restores the client afterwards.
-#
-# Run from the repository root: ./mesherytest/mutation_check.sh
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -29,12 +25,9 @@ for mutation in cluster-filter one-based-paging bearer-header pagesize-spelling;
     bearer-header)
       perl -0pi -e 's/\treq\.AddCookie\(&http\.Cookie\{Name: "token".*\n\treq\.AddCookie\(&http\.Cookie\{Name: "meshery-provider".*\n/\treq.Header.Set("Authorization", "Bearer "+c.token)\n/' "$CLIENT" ;;
     pagesize-spelling)
-      # The camelCase spelling is silently ignored by /api/pattern.
       perl -0pi -e 's/q\.Set\("pagesize", strconv\.Itoa\(pageSize\)\)/q.Set("pageSize", strconv.Itoa(pageSize))/' "$CLIENT" ;;
   esac
 
-  # The fake-backed tests are hidden while the mock-backed suites run, so each
-  # column reports only its own coverage.
   mv "$E2E" "$E2E_STASH"
   mcp=$(verdict .)
   client=$(verdict ./meshery/)

@@ -2,8 +2,6 @@ package mesherytest
 
 import "fmt"
 
-// Data is the fixture set the fake serves. Field names and JSON tags follow
-// Meshery's wire format rather than anything convenient.
 type Data struct {
 	Contexts    []Context
 	Connections []Connection
@@ -12,12 +10,6 @@ type Data struct {
 	OrgID       string
 }
 
-// Context mirrors an entry from GET /api/system/kubernetes/contexts.
-//
-// The three identifiers here are distinct and not interchangeable:
-// KubernetesServerID is what MeshSync keys resources on, ConnectionID
-// addresses the connection record, and ID is the deployment target passed as
-// ?contexts=.
 type Context struct {
 	ID                 string `json:"id"`
 	Name               string `json:"name"`
@@ -27,7 +19,6 @@ type Context struct {
 	KubernetesServerID string `json:"kubernetesServerId"`
 }
 
-// Connection mirrors an entry from GET /api/integrations/connections.
 type Connection struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
@@ -35,20 +26,12 @@ type Connection struct {
 	Status string `json:"status"`
 }
 
-// Design mirrors an entry from GET /api/pattern.
-//
-// PatternFile is a JSON *string* on current Meshery, not a nested object, and
-// it is served under the camelCase key. Decoding it as an object, or looking
-// only for the older pattern_file spelling, yields an empty design and no
-// error.
 type Design struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	PatternFile string `json:"patternFile"`
 }
 
-// Resource mirrors a MeshSync-discovered object from
-// GET /api/system/meshsync/resources.
 type Resource struct {
 	ID         string   `json:"id"`
 	Kind       string   `json:"kind"`
@@ -57,7 +40,6 @@ type Resource struct {
 	Metadata   Metadata `json:"metadata"`
 }
 
-// Metadata is the subset of object metadata MeshSync returns by default.
 type Metadata struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
@@ -69,9 +51,6 @@ const designFileJSON = `{"name":"bookinfo","schemaVersion":"designs.meshery.io/v
 	`{"id":"c2","displayName":"tls-cert","component":{"kind":"Secret","version":"v1"}}],` +
 	`"relationships":[{"id":"r1","kind":"edge","subType":"network","type":"non-binding"}]}`
 
-// SeedData returns a small dataset: one cluster, one connection, two designs
-// and four discovered resources, one of which is a Secret so that a Secret
-// exclusion guarantee has something to exclude.
 func SeedData() *Data {
 	const ksid = "ksid-9c2e"
 	return &Data{
@@ -104,9 +83,6 @@ func SeedData() *Data {
 	}
 }
 
-// seedDesigns returns more than one default page of designs. The count matters:
-// with 25 or fewer, "no limit" and "fell back to the default of 25" return the
-// same thing, and a test cannot tell them apart.
 func seedDesigns() []Design {
 	designs := []Design{
 		{ID: "d-1001", Name: "bookinfo", PatternFile: designFileJSON},
@@ -122,8 +98,6 @@ func seedDesigns() []Design {
 	return designs
 }
 
-// ClusterID returns the Kubernetes server ID of the seeded cluster, which is
-// the value the cluster-scoped endpoints expect.
 func (d *Data) ClusterID() string {
 	if len(d.Contexts) == 0 {
 		return ""
