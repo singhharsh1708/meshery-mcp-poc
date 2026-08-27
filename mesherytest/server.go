@@ -2,9 +2,11 @@ package mesherytest
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -133,7 +135,25 @@ func (s *Server) Requests() []Request {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Request, len(s.requests))
-	copy(out, s.requests)
+	for i, r := range s.requests {
+		// The struct copy alone would leave Query, Cookies and Headers pointing
+		// at the recorded maps, so a caller poking at a returned request would
+		// change what later assertions read.
+		out[i] = r
+		out[i].Query = cloneValues(r.Query)
+		out[i].Cookies = maps.Clone(r.Cookies)
+		out[i].Headers = maps.Clone(r.Headers)
+	}
+	return out
+}
+
+// cloneValues deep-copies query parameters. url.Values holds slices, so a map
+// clone alone would still share them.
+func cloneValues(v url.Values) url.Values {
+	out := make(url.Values, len(v))
+	for k, vals := range v {
+		out[k] = slices.Clone(vals)
+	}
 	return out
 }
 

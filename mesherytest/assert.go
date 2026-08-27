@@ -183,18 +183,29 @@ func (s *Server) AssertClusterScoped(t T, path string, want ...string) {
 	assertSameSet(t, path, "clusterIds", got, want)
 }
 
+// assertSameSet compares the two sets in both directions. A missing id means the
+// client did not ask for what the test expects; an extra one means it widened
+// the scope past it, which for a cluster filter is a request for somebody else's
+// data and should not pass.
 func assertSameSet(t T, path, key string, got, want []string) {
 	t.Helper()
 	if len(want) == 0 {
 		return
 	}
-	set := map[string]bool{}
+	gotSet := make(map[string]bool, len(got))
 	for _, g := range got {
-		set[g] = true
+		gotSet[g] = true
 	}
+	wantSet := make(map[string]bool, len(want))
 	for _, w := range want {
-		if !set[w] {
+		wantSet[w] = true
+		if !gotSet[w] {
 			t.Errorf("%s: %s = %v, missing %q", path, key, got, w)
+		}
+	}
+	for _, g := range got {
+		if !wantSet[g] {
+			t.Errorf("%s: %s = %v, scoped to %q as well, which the test did not ask for", path, key, got, g)
 		}
 	}
 }

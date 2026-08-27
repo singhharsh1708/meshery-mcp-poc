@@ -874,3 +874,62 @@ func TestGarbagePaginationDoesNotPanic(t *testing.T) {
 		}
 	}
 }
+
+// TestRequestsAreIndependentSnapshots checks a caller cannot reach back into the
+// recorded requests through the maps a returned Request carries. A test helper
+// that lets one assertion corrupt the next is worse than no helper.
+func TestRequestsAreIndependentSnapshots(t *testing.T) {
+	s := mesherytest.New(t)
+	authedGet(t, s, "/api/pattern", "search=bookinfo")
+
+	first := s.Requests()
+	first[0].Query.Set("search", "tampered")
+	first[0].Query["kind"] = []string{"injected"}
+	first[0].Cookies["token"] = "tampered"
+	first[0].Headers["Accept"] = "tampered"
+
+	again := s.Requests()
+	if got := again[0].Query.Get("search"); got != "bookinfo" {
+		t.Errorf("query survived tampering as %q, want %q", got, "bookinfo")
+	}
+	if _, ok := again[0].Query["kind"]; ok {
+		t.Error("a key added to a returned request reached the recorded one")
+	}
+	if got := again[0].Cookies["token"]; got != s.Token {
+		t.Errorf("cookie = %q, want %q", got, s.Token)
+	}
+	if got := again[0].Headers["Accept"]; got == "tampered" {
+		t.Error("a header written on a returned request reached the recorded one")
+	}
+}
+
+// TestClusterScopeRejectsAWiderRequest checks the assertion fails when the
+// client scoped to more clusters than the test named. Only checking that the
+// wanted ids are present would let a client read another cluster's resources
+// and still pass.
+func TestClusterScopeRejectsAWiderRequest(t *testing.T) {
+	s := mesherytest.New(t)
+	cluster := s.Data().ClusterID()
+
+	authedGet(t, s, "/api/system/meshsync/resources",
+		`clusterIds=["`+cluster+`","someone-elses-cluster"]`)
+
+	failed, msg := (&recorder{}).run(func(tt mesherytest.T) {
+		s.AssertClusterScoped(tt, "/api/system/meshsync/resources", cluster)
+	})
+	if !failed {
+		t.Fatal("a request scoped to an extra cluster should not satisfy the assertion")
+	}
+	if !strings.Contains(msg, "someone-elses-cluster") {
+		t.Errorf("the failure should name the extra cluster, got: %s", msg)
+	}
+
+	// And the exact scope still passes.
+	s2 := mesherytest.New(t)
+	authedGet(t, s2, "/api/system/meshsync/resources", `clusterIds=["`+s2.Data().ClusterID()+`"]`)
+	if failed, msg := (&recorder{}).run(func(tt mesherytest.T) {
+		s2.AssertClusterScoped(tt, "/api/system/meshsync/resources", s2.Data().ClusterID())
+	}); failed {
+		t.Errorf("the exact scope should pass, got: %s", msg)
+	}
+}
