@@ -140,9 +140,13 @@ func (s *Server) handleResources(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// writeAsDesign reproduces the undocumented asDesign path: the flat resource
-// list is cleared and a design carrying components and relationships is
-// returned instead.
+// writeAsDesign reproduces the asDesign path: the flat resource list is cleared
+// and a design carrying components and relationships is returned instead.
+//
+// Meshery's published v0.9 REST API reference puts it as "asDesign is a boolean
+// value. If true then the response is returned as a design and resources are
+// omitted". It is absent from docs/data/openapi.yml, the repository's only
+// machine-readable spec, so a test is the only thing pinning it.
 func (s *Server) writeAsDesign(w http.ResponseWriter, page, size int, res []Resource) {
 	components := make([]map[string]any, 0, len(res))
 	for _, r := range res {

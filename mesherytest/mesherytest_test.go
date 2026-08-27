@@ -309,9 +309,10 @@ func TestPageBeyondTheEndIsEmptyNotAPanic(t *testing.T) {
 	}
 }
 
-// TestAsDesignClearsTheFlatList covers the undocumented topology path: setting
-// asDesign moves the answer into a design and empties resources. A client that
-// keeps reading resources gets an empty list and no error.
+// TestAsDesignClearsTheFlatList covers the topology path: setting asDesign moves
+// the answer into a design and empties resources, so a client that keeps reading
+// resources gets an empty list and no error. Meshery's own reference says the
+// resources are omitted; this pins that it means emptied rather than absent.
 func TestAsDesignClearsTheFlatList(t *testing.T) {
 	s := mesherytest.New(t)
 

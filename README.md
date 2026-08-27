@@ -203,7 +203,7 @@ The cluster topology resource is built on `GET /api/system/meshsync/resources?as
 
 Three things that shape the implementation, all from `server/handlers/meshsync_handler.go`:
 
-- `asDesign` is undocumented and absent from Meshery's `openapi.yml`, so it is treated here as an internal API that can move.
+- `asDesign` is documented in Meshery's published v0.9 REST API reference, where it reads "asDesign is a boolean value. If true then the response is returned as a design and resources are omitted", but it is absent from `docs/data/openapi.yml`, the repository's only machine-readable spec. It is treated here as stable enough to build on and worth pinning with a test.
 - When it is set, the server clears the flat `resources` list. You get the graph or the list, never both in one call.
 - Evaluation runs at depth 1 with no timeout guard, and on failure the server falls back to the un-evaluated design and still returns 200. An empty `relationships` array therefore means "no edges were derived or evaluation failed", never a confirmed empty graph, which is why the resource reports an explicit `evaluated` field rather than presenting empty edges as healthy.
 
