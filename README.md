@@ -159,7 +159,7 @@ npx @modelcontextprotocol/inspector ./meshery-mcp-poc
 go test ./... -race
 ```
 
-62 tests, 77.0% coverage on the server package, 80.7% on the Meshery client and 89.1% on `mesherytest`. Every guarantee below has a test that fails if it stops holding, verified red-green rather than assumed:
+59 tests (76 including subtests), 77.0% coverage on the server package, 80.7% on the Meshery client and 90.3% on `mesherytest`. The suite runs in about 3 seconds. Every guarantee below has a test that fails if it stops holding, verified red-green rather than assumed:
 
 | Guarantee | What breaks without it |
 |---|---|
