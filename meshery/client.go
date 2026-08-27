@@ -23,6 +23,19 @@ type Client struct {
 	token    string
 	provider string
 	http     *http.Client
+
+	// unconfigured carries the reason this client cannot reach Meshery, when
+	// it cannot. Every request returns it rather than attempting a call that
+	// would fail less informatively.
+	unconfigured error
+}
+
+// Unconfigured returns a Client that reports why it cannot reach Meshery
+// instead of trying. It lets the server start and hand the reason to the model
+// on the first call, rather than exiting before a client can complete a
+// handshake and see anything at all.
+func Unconfigured(reason error) *Client {
+	return &Client{unconfigured: reason}
 }
 
 // NewFromEnv reads MESHERY_URL (default http://localhost:9081) and
@@ -61,6 +74,9 @@ func New(baseURL, token, provider string) *Client {
 }
 
 func (c *Client) get(ctx context.Context, path string, q url.Values, out any) error {
+	if c.unconfigured != nil {
+		return fmt.Errorf("meshery is not configured: %w", c.unconfigured)
+	}
 	u := c.baseURL + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()

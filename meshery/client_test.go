@@ -203,3 +203,23 @@ func TestListKubernetesConnectionsFiltersByKind(t *testing.T) {
 		t.Errorf("auth cookies not sent: %q", gotCookies)
 	}
 }
+
+// TestUnconfiguredClientReportsWhy checks a client with no credentials answers
+// with the reason rather than attempting a call. The server starts in this
+// state on purpose, so that an MCP client completes a handshake and sees the
+// configuration problem instead of a process that exited before saying
+// anything.
+func TestUnconfiguredClientReportsWhy(t *testing.T) {
+	c := Unconfigured(errors.New("read meshery token: no such file"))
+
+	_, err := c.ListDesigns(context.Background(), "", 0, 10)
+	if err == nil {
+		t.Fatal("expected an error from an unconfigured client")
+	}
+	if !strings.Contains(err.Error(), "not configured") {
+		t.Errorf("error = %q, want it to say the client is not configured", err)
+	}
+	if !strings.Contains(err.Error(), "no such file") {
+		t.Errorf("error = %q, want the underlying reason preserved", err)
+	}
+}
