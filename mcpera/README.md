@@ -70,12 +70,54 @@ legacy server, and a legacy client has no fall-forward mechanism at all.
 
 The command exits non-zero when it finds a silent downgrade, so it can gate CI.
 
+## Over HTTP
+
+Streamable HTTP adds a rule with a security rationale behind it. Revision
+`2026-07-28` requires a server to reject a request whose headers disagree with
+its body, with `400` and error `-32020`, and the spec says why:
+
+> This prevents potential security vulnerabilities when different components in
+> the network rely on different sources of truth (e.g., a load balancer routing
+> on the header value while the MCP server executes based on the body value).
+
+`ProbeHTTP` calls a tool twice, once with `Mcp-Name` agreeing with the body and
+once naming a different tool, and reports which happened. Measured against the
+same servers, each exposing a `ping` and a `danger` tool:
+
+| server | serves modern | header/body mismatch |
+|---|---|---|
+| `go-sdk` v1.7.0, `Stateless: true` | yes, modern shape | rejected, `400` / `-32020` |
+| `mcp-go` v1.0.0-beta.1 | yes, modern shape | rejected, `400` / `-32020` |
+| `mcp-go` v0.57.0, legacy session | yes, **legacy shape** | **ran `danger`, `200`** |
+
+Both current SDKs enforce it correctly. v0.57.0 predates the rule, so it ignores
+`Mcp-Name` and runs whatever the body asked for:
+
+```text
+Mcp-Name: ping                      <- what an intermediary would route on
+body:     {"name":"danger"}         <- what the server executed
+->        200 {"content":[{"type":"text","text":"DANGER EXECUTED"}]}
+```
+
+That is not v0.57.0 violating its own revision, since the rule is newer than it.
+It is the deployment shape the spec's own note warns intermediaries about: if the
+`MCP-Protocol-Version` is older than the rule, or absent, an intermediary
+**SHOULD** reject rather than trust header values the server never validated.
+
+One thing worth knowing before reaching for the go-sdk over HTTP: its default
+`NewStreamableHTTPHandler` refuses `2026-07-28` outright with
+`protocol version "2026-07-28" is only supported on stateless HTTP servers`.
+It needs `&mcp.StreamableHTTPOptions{Stateless: true}`, which the README setup
+does not set.
+
 ## Scope
 
-stdio only. The Streamable HTTP era negotiation runs through the
-`MCP-Protocol-Version` header and its own server-validation rules, which this
-does not probe yet.
+The stdio probe opens a fresh process per exchange. The HTTP probe calls the
+endpoint directly and needs a server already listening, plus the names of two
+tools it is safe to run.
 
-The rows above are one-tool servers, not the SDKs in full. They say what
-these SDKs do on a default stdio server, which is what an MCP server author gets
-by following each SDK's README.
+The rows above are one and two-tool servers, not the SDKs in full. They say what
+these SDKs do on a default setup, which is what an MCP server author gets by
+following each README.
+
+
