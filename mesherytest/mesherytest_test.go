@@ -305,9 +305,9 @@ func TestOrgScopedEndpointsRequireOrgID(t *testing.T) {
 	}
 }
 
-// TestRegistryIsUnauthenticated pins the one family that genuinely needs no
+// TestRegistryReadsAreUnauthenticated pins the routes that genuinely need no
 // session, so a client is not made to authenticate where Meshery does not.
-func TestRegistryIsUnauthenticated(t *testing.T) {
+func TestRegistryReadsAreUnauthenticated(t *testing.T) {
 	s := mesherytest.New(t)
 
 	status, body := naiveGet(t, s.URL(), "/api/registry/models", "")
@@ -315,7 +315,34 @@ func TestRegistryIsUnauthenticated(t *testing.T) {
 		t.Fatalf("status = %d, want 200", status)
 	}
 	if strings.Contains(string(body), "Sign in") {
-		t.Fatal("registry routes are NoAuth in Meshery and should not redirect")
+		t.Fatal("registry GETs are NoAuth in Meshery and should not redirect")
+	}
+}
+
+// TestRegistryWritesStillNeedASession covers the half of the registry that is
+// not NoAuth. Exempting the whole prefix would let an unauthenticated write past
+// AssertAuthenticated, which is exactly the kind of hole a blanket rule leaves.
+func TestRegistryWritesStillNeedASession(t *testing.T) {
+	s := mesherytest.New(t)
+
+	req, _ := http.NewRequest(http.MethodPost, s.URL()+"/api/registry/register", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "Sign in") {
+		t.Fatalf("an unauthenticated registry write should have been redirected to login, got: %s", body)
+	}
+
+	// And the assertion notices, rather than treating the prefix as exempt.
+	failed, msg := (&recorder{}).run(s.AssertAuthenticated)
+	if !failed {
+		t.Error("AssertAuthenticated exempted an unauthenticated registry write")
+	}
+	if !strings.Contains(msg, "/api/registry/register") {
+		t.Errorf("expected the write to be named in the failure, got: %s", msg)
 	}
 }
 

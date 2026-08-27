@@ -2,6 +2,7 @@ package mesherytest
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 )
 
@@ -70,17 +71,17 @@ func (s *Server) AssertNotCalled(t T, path string) {
 // AssertAuthenticated fails unless every recorded request that needed
 // credentials carried both cookies. It catches a client that authenticates with
 // an Authorization header, which a locally started Meshery accepts and a remote
-// one rejects.
+// one does not.
 func (s *Server) AssertAuthenticated(t T) {
 	t.Helper()
 	checked := 0
 	for _, r := range s.Requests() {
-		if isPublicPath(r.Path) {
+		if isPublic(r) {
 			continue
 		}
 		checked++
 		if r.Cookies["token"] != s.Token {
-			t.Errorf("%s %s: token cookie = %q, want %q. Meshery reads the session only from cookies; no route reads an Authorization header",
+			t.Errorf("%s %s: token cookie = %q, want %q. Meshery reads the session from cookies; RemoteProvider.GetToken looks at req.Cookie(\"token\") and nothing else, so an Authorization header is not a session",
 				r.Method, r.Path, r.Cookies["token"], s.Token)
 		}
 		if r.Cookies["meshery-provider"] != s.Provider {
@@ -93,11 +94,23 @@ func (s *Server) AssertAuthenticated(t T) {
 	}
 }
 
-func isPublicPath(path string) bool {
-	return path == "/api/system/version" ||
-		path == "/provider" ||
-		path == "/auth/login" ||
-		strings.HasPrefix(path, "/api/registry")
+// isPublic reports whether a recorded request went to a route Meshery serves
+// without a session, so AssertAuthenticated does not demand cookies where
+// Meshery does not.
+//
+// The registry is a mix rather than a blanket exemption: every GET under
+// /api/registry is registered with models.NoAuth, but several mutating routes
+// are registered with models.ProviderAuth and do require a session, among them
+// POST /api/registry/register, DELETE /api/registry/models/{id},
+// POST /api/registry/relationships/evaluate and the connection-definition
+// writes (server/router/server.go:263-289). Exempting the whole prefix would
+// let an unauthenticated write slip past this assertion.
+func isPublic(r Request) bool {
+	switch r.Path {
+	case "/api/system/version", "/provider", "/auth/login":
+		return true
+	}
+	return r.Method == http.MethodGet && strings.HasPrefix(r.Path, "/api/registry")
 }
 
 // AssertQuery fails unless the last request to path carried key=want.

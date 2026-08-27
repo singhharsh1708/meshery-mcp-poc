@@ -61,20 +61,33 @@ Every behaviour below is taken from a handler in `meshery/meshery` at current
 master, cited in `doc.go` next to the code that reproduces it.
 
 **Authentication.** The session lives in the `token` and `meshery-provider`
-cookies. No route reads an `Authorization` header. An unauthenticated call is
-not a 401: it is a 302 to a login page, and a client that follows redirects gets
-`200 OK` with HTML and fails inside its JSON decoder. `WithLocalProvider()`
-switches to the local provider's behaviour, which accepts everything, because
-that is why a broken client can pass every test against a locally started
-Meshery and fail only against a remote one.
+cookies. `RemoteProvider.GetToken` reads `req.Cookie("token")` and nothing else,
+so an `Authorization` header is not a session. The first unauthenticated call is
+not answered with a 401 either: it is a 302 to a login page, and a client that
+follows redirects gets `200 OK` with HTML and fails inside its JSON decoder.
+`WithLocalProvider()` switches to the local provider's behaviour, which accepts
+everything, because that is why a client with broken auth can pass its whole
+suite against a locally started Meshery and fail against a remote one.
 
-**Cluster scoping.** `/resources` takes a JSON-encoded `clusterIds` array and
-returns nothing without it. Its sibling `/resources/summary` takes a repeated
-singular `clusterId` and answers 400 without it. The two spellings are not
-interchangeable, and getting the first one wrong is silent.
+Two 401 paths exist and are deliberately not reproduced, both documented in
+`doc.go`: Meshery counts attempts in a cookie and answers 401 once retries reach
+`MaxAuthRetries` (3), and it answers 401 outright when an enforced provider key
+does not match. Neither is what a client meets first, and reproducing the retry
+counter would make the fake stateful for no gain.
 
-**Pagination.** Zero-based, `pageSize` canonical with `pagesize` accepted as the
-legacy spelling.
+**Cluster scoping.** `/resources` takes a JSON-encoded `clusterIds` array. Omit
+it and the handler sets the filter to an empty slice, so the SQL becomes
+`cluster_id IN ()` and you get `200 OK` with nothing. Send a bare unquoted id
+instead and `json.Unmarshal` fails, which is a 400. The silent case and the loud
+case are different, and the fake keeps them different. Its sibling
+`/resources/summary` takes a repeated singular `clusterId` and answers 400
+without it, so the two spellings are not interchangeable either.
+
+**Pagination.** Zero-based on both of Meshery's offset computations
+(`offset = page * limit` and `offset := (page) * pageSize`). Negative pages are
+clamped to 0, the default page size is 25, `pageSize` is canonical with
+`pagesize` accepted as the legacy spelling, and `pageSize=all` skips the limit
+entirely rather than falling back to the default.
 
 **Designs.** `patternFile` is a JSON *string* under a camelCase key. Decoding it
 as a nested object, or reading only the older `pattern_file`, yields an empty
@@ -84,7 +97,16 @@ design and no error.
 component graph instead. You get the graph or the list, never both.
 
 **Org scoping.** `/api/environments` and `/api/workspaces` answer 400 without an
-`orgId`. `/api/registry/*` needs no session at all.
+`orgId`.
+
+**Registry auth is a mix, not a blanket.** Every `GET` under `/api/registry` is
+registered with `models.NoAuth` and needs no session, which is why a read-only
+client should not be made to authenticate there. Several mutating routes are
+registered with `models.ProviderAuth` and do need one, among them
+`POST /api/registry/register`, `DELETE /api/registry/models/{id}`,
+`POST /api/registry/relationships/evaluate` and the connection-definition
+writes. `AssertAuthenticated` exempts the reads and not the writes, because
+exempting the whole prefix would let an unauthenticated write through.
 
 ## Assertions
 

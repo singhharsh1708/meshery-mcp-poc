@@ -33,8 +33,9 @@ type Server struct {
 	Provider string
 
 	// ProviderType selects the authentication behaviour. A local provider
-	// accepts everything, mirroring DefaultLocalProvider.GetSession, which
-	// returns nil unconditionally. A remote provider requires the cookies.
+	// accepts everything, mirroring DefaultLocalProvider.GetSession
+	// (server/models/default_local_provider.go:482), which takes the request as
+	// _ and returns nil. A remote provider requires the cookies.
 	ProviderType ProviderType
 
 	data *Data
@@ -54,8 +55,8 @@ const (
 	// the stricter and more useful default for tests.
 	RemoteProvider ProviderType = iota
 	// LocalProvider accepts any request. DefaultLocalProvider.GetSession
-	// returns nil unconditionally, which is why an incorrect auth
-	// implementation can pass against a locally started Meshery and fail only
+	// discards the request and returns nil, which is why an incorrect auth
+	// implementation can pass against a locally started Meshery and fail
 	// against a remote one.
 	LocalProvider
 )
@@ -135,9 +136,11 @@ func (s *Server) record(next http.Handler) http.Handler {
 // authenticated reports whether the request carries the cookie pair Meshery
 // requires. Registry routes bypass this; see routes.
 //
-// Meshery: RemoteProvider.GetToken reads only req.Cookie("token"), and
-// mesheryctl sends token alongside meshery-provider. No route reads an
-// Authorization header.
+// Meshery: RemoteProvider.GetToken (server/models/remote_auth.go:191) reads
+// only req.Cookie(TokenCookieName), and mesheryctl sends token alongside
+// meshery-provider. No inbound route reads an Authorization header to establish
+// a session; the only Authorization headers in the tree are on Meshery's own
+// outbound calls to Grafana and Prometheus.
 func (s *Server) authenticated(r *http.Request) bool {
 	if s.ProviderType == LocalProvider {
 		return true
@@ -153,13 +156,23 @@ func (s *Server) authenticated(r *http.Request) bool {
 	return true
 }
 
-// redirectUnauthenticated reproduces Meshery answering an unauthenticated API
-// call with a 302 to a login page rather than a 401.
+// redirectUnauthenticated reproduces the first thing Meshery does with an
+// unauthenticated API call: a 302 to a login page, which a redirect-following
+// client turns into HTML with a 200 and a failure inside its JSON decoder.
 //
-// Meshery: ProviderMiddleware redirects to /provider when the provider cookie
-// is absent, and AuthMiddleware sends a remote provider through
-// HandleUnAuthenticated, which redirects to /auth/login. A client that follows
-// redirects lands on HTML with a 200 and fails inside its JSON decoder.
+// Meshery: AuthMiddleware sends a failed remote-provider auth through
+// HandleUnAuthenticated (server/models/remote_provider.go:1049), which
+// redirects to /auth/login when the meshery-provider cookie is present and to
+// /provider when it is not. SessionInjectorMiddleware
+// (server/handlers/middlewares.go:221) redirects to /provider likewise.
+//
+// Deliberately not reproduced: Meshery counts attempts in a cookie and answers
+// 401 once retries reach MaxAuthRetries, which is 3
+// (server/models/remote_auth.go:39), and AuthMiddleware answers 401 outright
+// when an enforced provider key does not match
+// (server/handlers/middlewares.go:169). Neither is the case a client meets
+// first, and reproducing the retry counter would make the fake stateful for no
+// gain, so the fake always takes the redirect branch.
 func (s *Server) redirectUnauthenticated(w http.ResponseWriter, r *http.Request) {
 	if _, err := r.Cookie("meshery-provider"); err != nil {
 		http.Redirect(w, r, "/provider", http.StatusFound)

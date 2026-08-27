@@ -13,6 +13,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// Unauthenticated by design, matching Meshery.
 	mux.HandleFunc("/api/system/version", s.handleVersion)
 	mux.HandleFunc("/api/registry/", s.handleRegistry)
+	mux.HandleFunc("/api/registry", s.handleRegistry)
 
 	mux.HandleFunc("/api/system/kubernetes/contexts", s.guard(s.handleContexts))
 	mux.HandleFunc("/api/integrations/connections", s.guard(s.handleConnections))
@@ -44,8 +45,19 @@ func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// handleRegistry stands in for the /api/registry family, which is NoAuth.
-func (s *Server) handleRegistry(w http.ResponseWriter, _ *http.Request) {
+// handleRegistry stands in for the /api/registry family. Reads are NoAuth;
+// writes are not. Meshery registers every registry GET with models.NoAuth, but
+// POST /register, DELETE /models/{id}, POST /relationships/evaluate and the
+// connection-definition writes with models.ProviderAuth
+// (server/router/server.go:263-289), so a read-only client that only ever GETs
+// here needs no session, and one that writes does.
+func (s *Server) handleRegistry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		if !s.authenticated(r) {
+			s.redirectUnauthenticated(w, r)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"page": 0, "pageSize": 25, "totalCount": 0, "models": []any{},
 	})
