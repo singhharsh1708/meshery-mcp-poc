@@ -32,7 +32,8 @@ type Request struct {
 
 // Server is a fake Meshery Server. Create one with New.
 type Server struct {
-	// Token and Provider are the cookie values the fake accepts.
+	// Token is the value of the token cookie the fake accepts. Provider is the
+	// provider name, which a request may convey by cookie, header or query.
 	Token    string
 	Provider string
 
@@ -311,10 +312,8 @@ func spellingFor(path string) sizeSpelling {
 
 // pageParams reads the pagination parameters the way the given endpoint does.
 //
-// Passing the spelling per endpoint rather than accepting both everywhere is
-// the point: a client that sends pageSize to an endpoint reading only pagesize
-// gets the default of 25 with no error, and a fake that accepted both would
-// hide exactly that.
+// A client that sends pageSize to an endpoint reading only pagesize gets the
+// default of 25 and no error.
 func pageParams(q url.Values, spelling sizeSpelling) (page, pageSize int) {
 	page, _ = strconv.Atoi(q.Get("page"))
 	sizeStr := q.Get("pagesize")

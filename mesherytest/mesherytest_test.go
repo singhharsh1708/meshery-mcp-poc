@@ -723,9 +723,8 @@ func TestGarbagePaginationDoesNotPanic(t *testing.T) {
 		"page=&pagesize=",
 		"pagesize=0",
 		"page=2147483647&pagesize=2147483647",
-		// These overflow page*pageSize on a 64-bit int. The third wraps the
-		// product negative, which reached a slice bounds panic before the
-		// arithmetic compared before multiplying.
+		// These overflow page*pageSize on a 64-bit int; the third wraps the
+		// product negative.
 		"page=1&pagesize=9223372036854775807",
 		"page=2&pagesize=4611686018427387904",
 		"page=4611686018427387904&pagesize=2",
