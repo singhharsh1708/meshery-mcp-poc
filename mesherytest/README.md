@@ -205,9 +205,18 @@ GET /api/pattern?page=0&pagesize=3                       -> first three designs
 GET /api/pattern?page=1&pagesize=3                       -> a different three
 ```
 
-So the envelope is camelCase on the wire, `pageSize` and `totalCount`; both
-`resources` and `design` are always present rather than one or the other; and
-the pager really is zero-based, with `page=1` returning the second page.
+So the envelope is camelCase on the wire, `pageSize` and `totalCount`, and the
+pager really is zero-based, with `page=1` returning the second page. Both
+`resources` and `design` are always present rather than one or the other: the key
+set is identical with and without `asDesign`, since the response struct carries
+no `omitempty` on `design`, so a client cannot use its presence to tell the two
+paths apart. The summary carries `labels` alongside `kinds` and `namespaces`, and
+all three come back `null` rather than `[]` on a cluster holding nothing.
+
+Registry routing checked as well. `/api/registry/{models,categories,relationships,registrants}`
+and the same four paths under `/api/meshmodels` all answer 200, a registry GET
+with no cookies at all answers 200, and `POST /api/registry/register` with no
+cookies is redirected. That is exactly the split `AssertAuthenticated` encodes.
 
 **The design file is YAML from the list endpoint and JSON from the by-ID
 endpoint.** Six designs checked, all six the same way:

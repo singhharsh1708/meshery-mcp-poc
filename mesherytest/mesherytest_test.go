@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -537,6 +539,40 @@ func TestAsDesignClearsTheFlatList(t *testing.T) {
 	}
 	if want := len(s.Data().Resources); len(design["components"].([]any)) != want {
 		t.Fatalf("components = %d, want %d", len(design["components"].([]any)), want)
+	}
+}
+
+// TestEnvelopeKeysMatchTheLiveServer pins the response shapes against what a
+// running Meshery actually emits. The design key is present whether or not
+// asDesign was asked for, because the response struct has no omitempty on it, so
+// a client cannot use its presence to tell the two paths apart.
+func TestEnvelopeKeysMatchTheLiveServer(t *testing.T) {
+	s := mesherytest.New(t)
+	cluster := `clusterIds=["` + s.Data().ClusterID() + `"]`
+
+	keys := func(m map[string]any) []string {
+		out := make([]string, 0, len(m))
+		for k := range m {
+			out = append(out, k)
+		}
+		sort.Strings(out)
+		return out
+	}
+
+	plain := keys(authedGet(t, s, "/api/system/meshsync/resources", cluster))
+	design := keys(authedGet(t, s, "/api/system/meshsync/resources", cluster+"&asDesign=true"))
+	want := []string{"design", "page", "pageSize", "resources", "totalCount"}
+
+	for _, got := range [][]string{plain, design} {
+		if !slices.Equal(got, want) {
+			t.Errorf("envelope keys = %v, want %v", got, want)
+		}
+	}
+
+	// And the summary carries labels alongside kinds and namespaces.
+	sum := authedGet(t, s, "/api/system/meshsync/resources/summary", "clusterId="+s.Data().ClusterID())
+	if !slices.Equal(keys(sum), []string{"kinds", "labels", "namespaces"}) {
+		t.Errorf("summary keys = %v", keys(sum))
 	}
 }
 

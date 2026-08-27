@@ -138,7 +138,24 @@ func (s *Server) handleResources(w http.ResponseWriter, r *http.Request) {
 		"pageSize":   reportedSize(size, end-start),
 		"totalCount": len(filtered),
 		"resources":  filtered[start:end],
+		// design is on the wire either way. MeshSyncResourcesAPIResponse has no
+		// omitempty on it, so the key is always there and carries an empty
+		// PatternFile when asDesign was not asked for. Confirmed live: the key
+		// set is identical with and without the parameter.
+		"design": emptyDesign(),
 	})
+}
+
+// emptyDesign is the zero PatternFile Meshery serves when no design was built.
+func emptyDesign() map[string]any {
+	return map[string]any{
+		"id":            "00000000-0000-0000-0000-000000000000",
+		"name":          "",
+		"schemaVersion": "",
+		"version":       "",
+		"components":    []any{},
+		"relationships": []any{},
+	}
 }
 
 // writeAsDesign reproduces the asDesign path: the flat resource list is cleared
@@ -170,8 +187,12 @@ func (s *Server) writeAsDesign(w http.ResponseWriter, page, size int, res []Reso
 		"totalCount": len(res),
 		"resources":  []Resource{}, // emptied, as the real handler does
 		"design": map[string]any{
+			"id":            "9f1c0b7a-0000-4000-8000-000000000001",
 			"name":          "cluster",
 			"schemaVersion": "designs.meshery.io/v1beta1",
+			"version":       "0.0.1",
+			"metadata":      map[string]any{},
+			"preferences":   map[string]any{},
 			"components":    components,
 			"relationships": relationships,
 		},
@@ -193,9 +214,13 @@ func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
 	for k, n := range counts {
 		kinds = append(kinds, map[string]any{"kind": k, "count": n})
 	}
+	// labels is on the wire alongside kinds and namespaces. All three come back
+	// null rather than [] when the cluster holds nothing, which is what a live
+	// server with no resources returns.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"kinds":      kinds,
 		"namespaces": []string{"payments", "default"},
+		"labels":     []any{},
 	})
 }
 
