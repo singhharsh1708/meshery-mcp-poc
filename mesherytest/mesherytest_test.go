@@ -251,8 +251,8 @@ func TestMissingClusterFilterReturnsNothing(t *testing.T) {
 	}
 
 	out = authedGet(t, s, "/api/system/meshsync/resources", `clusterIds=["`+s.Data().ClusterID()+`"]`)
-	if n := out["totalCount"].(float64); n != 4 {
-		t.Fatalf("totalCount = %v, want 4 with the filter", n)
+	if want := float64(len(s.Data().Resources)); out["totalCount"].(float64) != want {
+		t.Fatalf("totalCount = %v, want %v with the filter", out["totalCount"], want)
 	}
 }
 
@@ -480,8 +480,8 @@ func TestAsDesignClearsTheFlatList(t *testing.T) {
 	if !ok {
 		t.Fatalf("no design in the response: %v", out)
 	}
-	if n := len(design["components"].([]any)); n != 4 {
-		t.Fatalf("components = %d, want 4", n)
+	if want := len(s.Data().Resources); len(design["components"].([]any)) != want {
+		t.Fatalf("components = %d, want %d", len(design["components"].([]any)), want)
 	}
 }
 
@@ -592,8 +592,8 @@ func TestRealClientSatisfiesEveryAssertion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListKubernetesResources: %v", err)
 	}
-	if len(res.Resources) != 3 {
-		t.Fatalf("resources = %d, want 3 of 4 with the Secret excluded", len(res.Resources))
+	if want := len(s.Data().Resources) - 1; len(res.Resources) != want {
+		t.Fatalf("resources = %d, want %d with the Secret excluded", len(res.Resources), want)
 	}
 	for _, r := range res.Resources {
 		if r.Kind == "Secret" {
@@ -618,8 +618,8 @@ func TestRealClientSatisfiesEveryAssertion(t *testing.T) {
 	if topo.ExcludedSecrets != 1 {
 		t.Errorf("excludedSecrets = %d, want 1", topo.ExcludedSecrets)
 	}
-	if len(topo.Components) != 3 {
-		t.Errorf("components = %d, want 3", len(topo.Components))
+	if want := len(s.Data().Resources) - 1; len(topo.Components) != want {
+		t.Errorf("components = %d, want %d with the Secret excluded", len(topo.Components), want)
 	}
 
 	design, err := c.GetDesignTopology(ctx, "d-1001")

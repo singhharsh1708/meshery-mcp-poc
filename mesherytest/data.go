@@ -100,6 +100,13 @@ func SeedData() *Data {
 				Metadata: Metadata{Name: "productpage-svc", Namespace: "payments"}},
 			{ID: "r4", Kind: "Secret", APIVersion: "v1", ClusterID: ksid,
 				Metadata: Metadata{Name: "db-credentials", Namespace: "payments"}},
+			// Nodes are cluster-scoped, so they carry no namespace. A cluster
+			// with none is not a cluster, and a tool that walks nodes needs
+			// something to walk.
+			{ID: "r5", Kind: "Node", APIVersion: "v1", ClusterID: ksid,
+				Metadata: Metadata{Name: "minikube"}},
+			{ID: "r6", Kind: "Node", APIVersion: "v1", ClusterID: ksid,
+				Metadata: Metadata{Name: "minikube-m02"}},
 		},
 	}
 }
