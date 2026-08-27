@@ -1025,3 +1025,34 @@ func TestClusterScopeRejectsAWiderRequest(t *testing.T) {
 		t.Errorf("the exact scope should pass, got: %s", msg)
 	}
 }
+
+// TestPublicExemptionStopsAtAPathBoundary checks the registry exemption covers
+// the registry and nothing that merely starts with the same letters. A prefix
+// match would also cover a sibling like /api/registry-admin, and silently
+// exempting a route from the auth check is worse than not checking at all.
+func TestPublicExemptionStopsAtAPathBoundary(t *testing.T) {
+	s := mesherytest.New(t)
+
+	for _, path := range []string{"/api/registry-admin", "/api/meshmodels-old"} {
+		naiveGet(t, s.URL(), path, "")
+	}
+
+	failed, msg := (&recorder{}).run(s.AssertAuthenticated)
+	if !failed {
+		t.Fatal("a sibling path was exempted from the auth check by a prefix match")
+	}
+	for _, path := range []string{"/api/registry-admin", "/api/meshmodels-old"} {
+		if !strings.Contains(msg, path) {
+			t.Errorf("expected %s to be flagged, got: %s", path, msg)
+		}
+	}
+
+	// The real registry subtree and its base are still exempt.
+	s2 := mesherytest.New(t)
+	naiveGet(t, s2.URL(), "/api/registry/models", "")
+	naiveGet(t, s2.URL(), "/api/meshmodels/models", "")
+	authedGet(t, s2, "/api/pattern", "")
+	if failed, msg := (&recorder{}).run(s2.AssertAuthenticated); failed {
+		t.Errorf("registry reads should stay exempt, got: %s", msg)
+	}
+}

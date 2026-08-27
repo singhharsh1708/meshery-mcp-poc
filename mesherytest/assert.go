@@ -120,8 +120,15 @@ func isPublic(r Request) bool {
 	if r.Method != http.MethodGet {
 		return false
 	}
-	return strings.HasPrefix(r.Path, "/api/registry") ||
-		strings.HasPrefix(r.Path, "/api/meshmodels")
+	return underPrefix(r.Path, "/api/registry") || underPrefix(r.Path, "/api/meshmodels")
+}
+
+// underPrefix reports whether path is the base itself or sits beneath it. A bare
+// strings.HasPrefix would also match a sibling like /api/registry-admin, and
+// exempting one of those from the auth check is the kind of hole that makes an
+// assertion library worse than none.
+func underPrefix(path, base string) bool {
+	return path == base || strings.HasPrefix(path, base+"/")
 }
 
 func orNone(s string) string {

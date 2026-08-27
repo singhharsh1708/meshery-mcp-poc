@@ -84,9 +84,13 @@ explicitly excludes from the `HandleUnAuthenticated` branch, so the request fall
 through to `LoginHandler`: a non-GET gets a bare `404`, and a GET is redirected
 off-host to the remote provider's own login URL. A token that is present but
 invalid is the case that does reach `HandleUnAuthenticated`, which stays on
-Meshery and redirects to `/auth/login` or `/provider`. Either way a
-redirect-following client gets `200 OK` with HTML and fails inside its JSON
-decoder, and an unauthenticated write looks like a missing endpoint.
+Meshery and redirects to `/auth/login` or `/provider`.
+
+The two outcomes fail differently. Anything that redirects, which is the gate,
+the no-token GET and the invalid-token case, ends with a redirect-following
+client holding `200 OK` and HTML, failing inside its JSON decoder. The no-token
+non-GET does not redirect at all: it is a bare `404` that reads like a missing
+endpoint rather than a missing session.
 
 The fake serves its own stand-in for the provider login page so tests stay
 hermetic; `WithRemoteLoginURL` points it off-host if that hop is what you are
@@ -134,8 +138,8 @@ assumes 25 everywhere mis-pages against four of these six.
 the endpoints this package serves, the contexts and designs handlers read
 `q.Get("pagesize")` and ignore `pageSize`, while `getPaginationParams` and
 `GetConnections` read `pageSize` and fall back to `pagesize`. A client sending
-`pageSize` to the first group has it ignored and gets the default of 25 with no
-error. Elsewhere in Meshery there are at least two further spellings,
+`pageSize` to the first group has it ignored and gets that endpoint's own
+default instead, which is 10 for all of them, as the table above sets out. Elsewhere in Meshery there are at least two further spellings,
 `FetchSmiResult` reading only `pageSize` and the credentials handler reading
 `page_size`, so this is a per-endpoint fact rather than a rule.
 
@@ -191,7 +195,7 @@ PORT=9081 PROVIDER=Local KEYS_PATH=../../server/permissions/keys.csv ./meshery-s
 It seeds itself with 355 designs and 292 models, which is enough to exercise
 pagination and the design endpoints for real. Confirmed:
 
-```
+```text
 GET /api/pattern                        (no provider)    -> 302 /provider?ref=L2FwaS9wYXR0ZXJu
 POST /api/pattern                       (no provider)    -> 302 /provider?ref=L2FwaS9wYXR0ZXJu
 GET /api/pattern    (meshery-provider=Local, or None)    -> 200
@@ -221,7 +225,7 @@ cookies is redirected. That is exactly the split `AssertAuthenticated` encodes.
 **The design file is YAML from the list endpoint and JSON from the by-ID
 endpoint.** Six designs checked, all six the same way:
 
-```
+```text
 design                             list   by-id
 prometheus-postgres-exporter       YAML   JSON
 Pod Resource Memory Request Limit  YAML   JSON
