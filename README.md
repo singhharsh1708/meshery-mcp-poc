@@ -227,6 +227,14 @@ PORT=9081 PROVIDER=Local KEYS_PATH=../../server/permissions/keys.csv ./meshery-s
 
 That server seeds itself with 355 designs and 292 models, which is enough to exercise pagination and the design endpoints for real. What the live run confirmed, and what it corrected, is in [the contract notes](mesherytest/README.md).
 
+There are integration tests for this now, behind a build tag so `go test ./...` stays hermetic:
+
+```bash
+make test-integration          # needs a Meshery running; see docs/INTEGRATION.md
+```
+
+They build the binary, drive it over stdio as a real MCP client would, and read real designs through the whole path. The design-topology one is the case a fake cannot reach: the list endpoint and the by-ID endpoint serve `patternFile` in different encodings, so a client handling only one passes every mock and fails here.
+
 Still not verified: behaviour with a real Kubernetes cluster attached. MeshSync needs an operator in-cluster, so the cluster-scoped resource endpoints were exercised against their guards and their empty shapes, not against discovered workloads.
 
 ## License
