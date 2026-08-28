@@ -154,6 +154,12 @@ func (b *Bridge) pumpServer() {
 				ch <- &cp
 				continue
 			}
+			// A reply to one of the bridge's own requests that nobody is
+			// waiting for any more, because the call was abandoned. Forwarding
+			// it would hand the client a reply to an id it never issued.
+			if isInternalID(msg.ID) {
+				continue
+			}
 		}
 		b.writeClient(line)
 	}
@@ -247,6 +253,15 @@ func (b *Bridge) serveModern(ctx context.Context, msg *message) {
 	}
 	if len(resp.Error) > 0 {
 		b.write(map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(msg.ID), "error": json.RawMessage(resp.Error)})
+		return
+	}
+	// JSON-RPC requires a reply to carry exactly one of result or error.
+	// Passing a reply with neither through as an empty result would hand the
+	// client a clean success where the legacy path hands it a decode failure,
+	// which is the era-dependent divergence this bridge exists to remove. A
+	// legal null result is four bytes and does not take this branch.
+	if len(resp.Result) == 0 {
+		b.replyError(msg.ID, -32603, "the wrapped server replied with neither result nor error")
 		return
 	}
 	b.write(map[string]any{
@@ -418,4 +433,14 @@ func (b *Bridge) writeServer(line []byte) {
 	b.writeMu.Lock()
 	defer b.writeMu.Unlock()
 	_, _ = b.toServer.Write(append(append([]byte{}, line...), '\n'))
+}
+
+// isInternalID reports whether an id came from the bridge rather than the
+// client. Bridge ids start at internalIDBase for exactly this reason.
+func isInternalID(id json.RawMessage) bool {
+	var n int64
+	if json.Unmarshal(id, &n) != nil {
+		return false
+	}
+	return n >= internalIDBase
 }

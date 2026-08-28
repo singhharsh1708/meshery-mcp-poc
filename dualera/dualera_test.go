@@ -439,3 +439,59 @@ func TestServerDeathFailsInflightRequests(t *testing.T) {
 		t.Fatalf("the request hung forever after the wrapped server died:\n%s", got)
 	}
 }
+
+// brokenReply answers with neither result nor error, which JSON-RPC 2.0 forbids
+// but a confused peer emits. The bridge must not turn that into a success.
+func brokenReply(in io.Reader, out io.Writer) {
+	sc := bufio.NewScanner(in)
+	enc := json.NewEncoder(out)
+	for sc.Scan() {
+		var m struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if json.Unmarshal(sc.Bytes(), &m) != nil || len(m.ID) == 0 {
+			continue
+		}
+		if m.Method == "initialize" {
+			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(m.ID),
+				"result": map[string]any{"protocolVersion": "2025-11-25",
+					"capabilities": map[string]any{}, "serverInfo": map[string]any{"name": "w"}}})
+			continue
+		}
+		_, _ = out.Write([]byte(`{"jsonrpc":"2.0","id":` + string(m.ID) + `}` + "\n"))
+	}
+}
+
+// TestResultlessReplyIsNotASuccess covers the bridge committing the exact fault
+// it exists to prevent. A reply with no result and no error was being handed to
+// the client as result:{}, an empty success, while the same reply on the legacy
+// path reaches the client intact and fails in its decoder. One server, an error
+// for a legacy client and a clean empty answer for a modern one, is the
+// era-dependent divergence the package doc is about.
+func TestResultlessReplyIsNotASuccess(t *testing.T) {
+	got := drive(t, brokenReply,
+		[]map[string]any{modern(5, "tools/call")}, 700*time.Millisecond)
+
+	if strings.Contains(got, `"result":{}`) {
+		t.Fatalf("a reply with neither result nor error became an empty success:\n%s", got)
+	}
+	if !strings.Contains(got, `"error"`) {
+		t.Fatalf("expected an error for a reply carrying neither:\n%s", got)
+	}
+}
+
+// TestLegalNullResultStillPasses guards the fix above from over-reaching. A
+// JSON null is a legal result and four bytes long, so it must still reach the
+// client rather than being mistaken for an absent one.
+func TestLegalNullResultStillPasses(t *testing.T) {
+	got := drive(t, nullResult,
+		[]map[string]any{modern(6, "tools/list")}, 700*time.Millisecond)
+
+	if strings.Contains(got, "neither result nor error") {
+		t.Fatalf("a legal null result was rejected as absent:\n%s", got)
+	}
+	if !strings.Contains(got, `"id":6`) {
+		t.Fatalf("no reply for id 6:\n%s", got)
+	}
+}
