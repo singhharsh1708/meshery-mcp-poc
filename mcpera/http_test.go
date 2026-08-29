@@ -153,3 +153,78 @@ func TestHTTPRefusalIsReported(t *testing.T) {
 		t.Error("nothing executed")
 	}
 }
+
+// JSON-RPC carries its errors in the body, so a server may reject the mismatch
+// and still answer 200. Reporting that as the dangerous tool having run is a
+// false accusation, and the report is the whole product here.
+func TestMismatchRejectedWithHTTP200IsNotAnExecution(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Mcp-Name") != "ping" {
+			// A rejection that is not the header-mismatch code: still an
+			// error, still a 200, still not an execution.
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid params"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","content":[]}}`))
+	}))
+	defer srv.Close()
+
+	rep, err := mcpera.ProbeHTTP(context.Background(), 5*time.Second, srv.URL, "ping", "danger", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.ExecutedMismatched {
+		t.Error("reported the tool as executed, but the server answered with a JSON-RPC error")
+	}
+	if rep.ValidatesHeaderBody {
+		t.Error("it rejected with -32602, not the code the revision specifies, so this is not conformance")
+	}
+}
+
+// A pretty-printed body is one JSON object across many lines. Reading only the
+// first line starting with { yields a bare brace, which parses as nothing.
+func TestPrettyPrintedBodyIsParsed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Mcp-Name") != "ping" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte("{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"error\": {\n    \"code\": -32020,\n    \"message\": \"header mismatch\"\n  }\n}"))
+			return
+		}
+		_, _ = w.Write([]byte("{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"result\": {\n    \"resultType\": \"complete\"\n  }\n}"))
+	}))
+	defer srv.Close()
+
+	rep, err := mcpera.ProbeHTTP(context.Background(), 5*time.Second, srv.URL, "ping", "danger", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.ModernResultIsModern {
+		t.Error("a pretty-printed modern result was not recognised as modern")
+	}
+	if rep.MismatchCode != mcpera.HeaderMismatchCode {
+		t.Errorf("mismatch code = %d, want %d from a pretty-printed error body", rep.MismatchCode, mcpera.HeaderMismatchCode)
+	}
+}
+
+// When the endpoint refuses both calls for an unrelated reason, the report must
+// not speak as though the server evaluated the header at all.
+func TestRefusedBothCallsIsNotAMismatchVerdict(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "Invalid session ID", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	rep, err := mcpera.ProbeHTTP(context.Background(), 5*time.Second, srv.URL, "ping", "danger", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.ValidatesHeaderBody || rep.ExecutedMismatched {
+		t.Error("the endpoint answered nothing, so neither verdict is available")
+	}
+	joined := strings.Join(rep.Notes, " ")
+	if !strings.Contains(joined, "did not serve") && !strings.Contains(joined, "refused") {
+		t.Errorf("the notes should say the endpoint refused the request, got: %v", rep.Notes)
+	}
+}

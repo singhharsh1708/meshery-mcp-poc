@@ -76,10 +76,21 @@ func ProbeHTTP(ctx context.Context, timeout time.Duration, url, agreeing, mismat
 	rep.MismatchCode = errorCode(body)
 
 	switch {
+	case !rep.ServesModern:
+		// The endpoint would not serve the agreeing call either, so it never
+		// judged the header and no verdict about it is available.
+		rep.note(fmt.Sprintf("Refused the agreeing call too (%s), so this says nothing about header validation; the endpoint did not serve either request.",
+			rep.RefusedModern))
 	case rep.MismatchCode == HeaderMismatchCode:
 		rep.ValidatesHeaderBody = true
 		rep.note(fmt.Sprintf("Rejects a header that disagrees with the body, %d with %d, as revision %s requires.",
 			status, HeaderMismatchCode, Version))
+	case rep.MismatchCode != 0:
+		// JSON-RPC carries its errors in the body, so an error here is a
+		// rejection whatever the status line says. It is simply not the code
+		// the revision specifies.
+		rep.note(fmt.Sprintf("Turned the mismatch away with JSON-RPC error %d (HTTP %d), not the %d the revision specifies.",
+			rep.MismatchCode, status, HeaderMismatchCode))
 	case status == http.StatusOK:
 		rep.ExecutedMismatched = true
 		rep.note("Ran the tool named in the body while the Mcp-Name header named a different one. " +
@@ -125,16 +136,34 @@ func callTool(ctx context.Context, c *http.Client, url, headerName, bodyName str
 	return resp.StatusCode, body, err
 }
 
-// jsonPayload pulls the JSON object out of a response that may be a bare body
-// or a single SSE event.
+// jsonPayload pulls the JSON object out of a response, whether it arrived as a
+// plain body or as SSE events.
+//
+// The whole body is tried first, because a pretty-printed object spans many
+// lines and taking the first line that opens a brace would return just that
+// brace. Only if that fails are data: lines gathered, which is how an SSE event
+// carries a payload, one event's lines joined.
 func jsonPayload(body []byte) []byte {
+	if trimmed := bytes.TrimSpace(body); json.Valid(trimmed) && len(trimmed) > 0 && trimmed[0] == '{' {
+		return trimmed
+	}
+	var event []string
 	for _, line := range strings.Split(string(body), "\n") {
-		line = strings.TrimSpace(line)
-		line = strings.TrimPrefix(line, "data:")
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "{") {
-			return []byte(line)
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			// Blank line ends an event. Take the first one that parses.
+			if joined := strings.Join(event, ""); json.Valid([]byte(joined)) && strings.HasPrefix(joined, "{") {
+				return []byte(joined)
+			}
+			event = nil
+			continue
 		}
+		if rest, ok := strings.CutPrefix(trimmed, "data:"); ok {
+			event = append(event, strings.TrimSpace(rest))
+		}
+	}
+	if joined := strings.Join(event, ""); json.Valid([]byte(joined)) && strings.HasPrefix(joined, "{") {
+		return []byte(joined)
 	}
 	return nil
 }
