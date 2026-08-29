@@ -72,11 +72,12 @@ type Bridge struct {
 	fromServer *bufio.Scanner
 	toClient   io.Writer
 
-	mu       sync.Mutex
-	pending  map[string]chan *message
-	nextID   int64
-	writeMu  sync.Mutex
-	clientMu sync.Mutex
+	mu        sync.Mutex
+	pending   map[string]chan *message
+	abandoned map[string]struct{}
+	nextID    int64
+	writeMu   sync.Mutex
+	clientMu  sync.Mutex
 
 	// handshakeMu guards the one legacy session the bridge holds. A failure is
 	// deliberately not cached: the wrapped server may simply not have finished
@@ -106,6 +107,7 @@ func New(toServer io.Writer, fromServer io.Reader, toClient io.Writer) *Bridge {
 		fromServer: sc,
 		toClient:   toClient,
 		pending:    make(map[string]chan *message),
+		abandoned:  make(map[string]struct{}),
 		nextID:     internalIDBase,
 		inflight:   make(chan struct{}, maxInflight),
 	}
@@ -157,7 +159,7 @@ func (b *Bridge) pumpServer() {
 			// A reply to one of the bridge's own requests that nobody is
 			// waiting for any more, because the call was abandoned. Forwarding
 			// it would hand the client a reply to an id it never issued.
-			if isInternalID(msg.ID) {
+			if b.wasAbandoned(msg.ID) {
 				continue
 			}
 		}
@@ -373,6 +375,9 @@ func (b *Bridge) call(ctx context.Context, method string, params json.RawMessage
 	case <-ctx.Done():
 		b.mu.Lock()
 		delete(b.pending, key)
+		// Remember it, so a late reply is dropped rather than forwarded to a
+		// client that never issued this id.
+		b.abandoned[key] = struct{}{}
 		b.mu.Unlock()
 		return nil, ctx.Err()
 	}
@@ -435,12 +440,21 @@ func (b *Bridge) writeServer(line []byte) {
 	_, _ = b.toServer.Write(append(append([]byte{}, line...), '\n'))
 }
 
-// isInternalID reports whether an id came from the bridge rather than the
-// client. Bridge ids start at internalIDBase for exactly this reason.
-func isInternalID(id json.RawMessage) bool {
-	var n int64
-	if json.Unmarshal(id, &n) != nil {
+// wasAbandoned reports whether an id belongs to a bridge request whose caller
+// gave up, and consumes the record. The entry is left behind only if the late
+// reply never arrives, which costs one map key per abandoned call.
+//
+// This tracks the ids actually issued and abandoned rather than testing whether
+// one falls in the bridge's reserved numeric range. A client is free to choose
+// any JSON-RPC id, a nanosecond timestamp among them, and a range test would
+// swallow the reply to any client id that happened to land above the base.
+func (b *Bridge) wasAbandoned(id json.RawMessage) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	key := string(id)
+	if _, ok := b.abandoned[key]; !ok {
 		return false
 	}
-	return n >= internalIDBase
+	delete(b.abandoned, key)
+	return true
 }

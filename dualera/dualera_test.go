@@ -495,3 +495,18 @@ func TestLegalNullResultStillPasses(t *testing.T) {
 		t.Fatalf("no reply for id 6:\n%s", got)
 	}
 }
+
+// A legacy client is free to use any JSON-RPC id, including a nanosecond
+// timestamp, which is larger than the range the bridge reserves for itself.
+func TestLargeClientIDIsNotMistakenForABridgeID(t *testing.T) {
+	const bigID = 1757000000000000000 // a plausible nanosecond timestamp
+
+	got := drive(t, func(r io.Reader, w io.Writer) { fakeLegacy(t, r, w) },
+		[]map[string]any{
+			{"jsonrpc": "2.0", "id": bigID, "method": "tools/list", "params": map[string]any{}},
+		}, 700*time.Millisecond)
+
+	if !strings.Contains(got, "1757000000000000000") {
+		t.Fatalf("the reply to a large client id was swallowed:\n%s", got)
+	}
+}
