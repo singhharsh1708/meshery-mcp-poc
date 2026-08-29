@@ -9,6 +9,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/singhharsh1708/meshery-mcp-poc/meshery"
+	"github.com/singhharsh1708/meshery-mcp-poc/mesherytest"
 )
 
 func mockTopologyMeshery(t *testing.T) *httptest.Server {
@@ -190,5 +191,62 @@ func TestSubscriptionsRefCount(t *testing.T) {
 	subs.remove("a")
 	if len(subs.uris()) != 0 {
 		t.Fatalf("uri retained after last unsubscribe: %v", subs.uris())
+	}
+}
+
+// Subscribing to a URI the server will not read leaves a client waiting for
+// updates that can never come, and it cannot tell that from a quiet resource.
+// Subscribe must accept exactly what read accepts.
+func TestSubscribeRefusesURIsTheServerWillNotRead(t *testing.T) {
+	fake := mesherytest.New(t)
+	cs := connectTo(t, newServer(meshery.New(fake.URL(), fake.Token, fake.Provider)))
+	ctx := context.Background()
+
+	// The assertion is on what the server accepts, not on what the client
+	// reports. Under revision 2026-07-28 a client subscribes through
+	// subscriptions/listen and records the subscription locally before the
+	// server answers, so its Subscribe returns nil either way.
+	for _, uri := range []string{
+		"meshery://clusters//topology",
+		"meshery://nope/whatever",
+		"file:///etc/passwd",
+		"meshery://designs//topology",
+	} {
+		_ = cs.Subscribe(ctx, &mcp.SubscribeParams{URI: uri})
+		if servableURI(uri) {
+			t.Errorf("%q should not be servable", uri)
+		}
+	}
+
+	good := "meshery://clusters/" + fake.Data().ClusterID() + "/topology"
+	if !servableURI(good) {
+		t.Errorf("%q is served by read and must be subscribable", good)
+	}
+}
+
+// servableURI has to agree with what the read handlers accept, since subscribe
+// is gated on it. A URI either side takes and the other refuses is a client
+// waiting on updates that cannot arrive.
+func TestServableURIAgreesWithRead(t *testing.T) {
+	fake := mesherytest.New(t)
+	cs := connectTo(t, newServer(meshery.New(fake.URL(), fake.Token, fake.Provider)))
+	ctx := context.Background()
+	cluster := fake.Data().ClusterID()
+
+	for _, uri := range []string{
+		"meshery://clusters/" + cluster + "/topology",
+		"meshery://clusters/" + cluster + "/summary",
+		"meshery://clusters/" + cluster + "/namespaces/payments/workloads",
+		"meshery://designs/d-1001/topology",
+		"meshery://clusters//topology",
+		"meshery://clusters/" + cluster + "/namespaces//workloads",
+		"meshery://nope/whatever",
+		"file:///etc/passwd",
+	} {
+		_, err := cs.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
+		readOK := err == nil
+		if got := servableURI(uri); got != readOK {
+			t.Errorf("%q: servableURI=%v but read succeeded=%v", uri, got, readOK)
+		}
 	}
 }

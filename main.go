@@ -140,6 +140,9 @@ func newServer(c *meshery.Client) *mcp.Server {
 	subs := newSubscriptions()
 	s := mcp.NewServer(&mcp.Implementation{Name: "meshery-mcp-poc", Version: "0.1.0"}, &mcp.ServerOptions{
 		SubscribeHandler: func(_ context.Context, req *mcp.SubscribeRequest) error {
+			if !servableURI(req.Params.URI) {
+				return mcp.ResourceNotFoundError(req.Params.URI)
+			}
 			subs.add(req.Params.URI)
 			return nil
 		},
