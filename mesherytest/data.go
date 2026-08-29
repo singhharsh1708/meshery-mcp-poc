@@ -149,7 +149,7 @@ func SeedData() *Data {
 }
 
 // seedDesigns returns more than one default page of designs. The count matters:
-// with 25 or fewer, "no limit" and "fell back to the default of 25" return the
+// with no more rows than a default page, "no limit" and "fell back to the default" return the
 // same thing, and a test cannot tell them apart.
 func seedDesigns() []Design {
 	designs := []Design{

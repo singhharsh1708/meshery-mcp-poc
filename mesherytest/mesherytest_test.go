@@ -379,7 +379,7 @@ func TestPageOneSkipsTheFirstPage(t *testing.T) {
 // TestPageSizeSpellingIsPerEndpoint is the trap that a fake accepting both
 // spellings everywhere would hide. Meshery is not consistent: most handlers read
 // only the lowercase pagesize, and there the camelCase pageSize is ignored and
-// the default of 25 quietly applies. Two paths read pageSize first and fall back
+// that endpoint's default quietly applies. Two paths read pageSize first and fall back
 // to pagesize. Nothing errors either way.
 func TestPageSizeSpellingIsPerEndpoint(t *testing.T) {
 	s := mesherytest.New(t)

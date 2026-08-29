@@ -80,7 +80,7 @@ Meshery uses three different identifiers for what a user calls "my cluster", and
 | `connectionId` | the connection record, used by Meshery's own events and connection APIs |
 | `id` (context id) | the deployment target, passed as `?contexts=` when deploying a design |
 
-The cluster-scoped endpoints are also unforgiving about it. `GET /api/system/meshsync/resources` filters with `cluster_id IN (?)` against whatever it is given, so omitting the filter produces an empty `IN` clause and returns nothing at all rather than everything. Its sibling `/resources/summary` requires a cluster too and answers 400 without one, and it spells the parameter differently: a repeated singular `clusterId`, not the JSON-encoded `clusterIds` array the resources endpoint parses.
+The cluster-scoped endpoints are also unforgiving about it. `GET /api/system/meshsync/resources` filters with `cluster_id IN (?)` against whatever it is given, so omitting the filter produces an empty `IN` clause and returns nothing at all rather than everything. Its sibling `/resources/summary` answers 400 without a `clusterId`, and it spells the parameter differently: a repeated singular `clusterId`, not the JSON-encoded `clusterIds` array the resources endpoint parses. That 400 is a presence check on the key alone, measured live: `clusterId=` with an empty value, or `clusterId=all`, both pass it and return 200.
 
 Prompts (guided read-only workflows):
 
@@ -96,7 +96,7 @@ No mutating endpoints are registered. `spec`/`status`/`labels`/`annotations` are
 go build -o meshery-mcp-poc .
 ```
 
-Requires Go 1.25+. Depends on `github.com/modelcontextprotocol/go-sdk` v1.7.0 and `github.com/yosida95/uritemplate/v3`, which the SDK also uses and which the resource handlers need to match URI templates.
+Requires Go 1.25+. Depends on `github.com/modelcontextprotocol/go-sdk` v1.7.0, `github.com/yosida95/uritemplate/v3` for matching resource URI templates, and `sigs.k8s.io/yaml` for the design files a real Meshery serves as YAML.
 
 ## Transports
 
@@ -159,14 +159,14 @@ npx @modelcontextprotocol/inspector ./meshery-mcp-poc
 go test ./... -race
 ```
 
-59 tests (76 including subtests), 77.0% coverage on the server package, 80.7% on the Meshery client and 90.3% on `mesherytest`. The suite runs in about 3 seconds. Every guarantee below has a test that fails if it stops holding, verified red-green rather than assumed:
+91 tests (107 including subtests) in the hermetic suite, plus 5 integration tests behind the `integration` build tag. Coverage: 76.5% on the server package, 81.3% on the Meshery client, 91.2% on `mesherytest`, 85.5% on `mcpera`, 86.7% on `dualera`. The hermetic suite runs in about 8 seconds. Every guarantee below has a test that fails if it stops holding, verified red-green rather than assumed:
 
 | Guarantee | What breaks without it |
 |---|---|
 | Secrets excluded on every path | a Secret name reaches the model |
 | `kind: "Secret"` refused | the filter is dropped and every other kind is returned as the answer |
 | Empty template variables rejected | `meshery://clusters//topology` returns every cluster as one |
-| `clusterIds` sent as a JSON array | the handler matches zero rows and the cluster looks empty |
+| `clusterIds` sent as a JSON array | absent, the handler matches zero rows and the cluster looks empty; malformed, a 400 |
 | `evaluated` derived, never hardcoded | a failed evaluation reads as a graph with no edges |
 | Design file spellings and shapes | a current Meshery returns an empty design with no error |
 
@@ -196,7 +196,15 @@ A hand-written mock returns the shape the code under test expects, so it agrees 
 | page size spelled `pageSize` not `pagesize` | passes | **passes** | catches |
 | bearer header instead of the cookies | passes | catches | catches |
 
-The two middle rows are the ones that matter. Meshery's pagination is zero-based on both of its offset paths, so a client that opens at page 1 skips the first page of every list it reads. And the page-size parameter is spelled differently per endpoint: most handlers read only the lowercase `pagesize` and ignore `pageSize` without saying so. Nothing in a suite written without prior knowledge of either catches them. The other two rows are caught by a client test only because a positive control for that exact query was hand-written after the bug had already been found the hard way. The package turns each of those controls into one line, so the next author does not have to know the trap first.
+The two middle rows are the ones that matter. Meshery's pagination is zero-based on both of its offset paths, so a client that opens at page 1 skips the first page of every list it reads. And the page-size parameter is spelled differently per endpoint: of the six endpoints measured, three read only the lowercase `pagesize` and ignore `pageSize` without saying so, and the defaults differ too. Nothing in a suite written without prior knowledge of either catches them. The other two rows are caught by a client test only because a positive control for that exact query was hand-written after the bug had already been found the hard way. The package turns each of those controls into one line, so the next author does not have to know the trap first.
+
+## mcpera and dualera
+
+Two packages that came out of this work but are not Meshery-specific, both stdlib-only:
+
+[`mcpera`](mcpera/) reports which MCP protocol era a server actually serves. Revision `2026-07-28` removed the `initialize` handshake, and a legacy server given a modern request can execute it and answer in the legacy shape, with no error and nothing on the wire saying the eras did not match. Measured: `mcp-go` v0.57.0 and v0.58.0 do exactly that; `mcp-go` v1.0.0-beta.1 and `go-sdk` v1.7.0 are dual-era. The command exits non-zero on a silent downgrade so it can gate CI. This server, being on `go-sdk` v1.7.0, measures as dual-era.
+
+[`dualera`](dualera/) is the migration path for servers that cannot upgrade: a stdio bridge that makes a legacy MCP server answer modern clients too. The same unmodified `mcp-go` v0.57.0 binary goes from `era: legacy` with a silent downgrade to `era: dual-era`, measured by `mcpera`, which knows nothing about the bridge.
 
 ## Topology
 

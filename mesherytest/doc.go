@@ -32,7 +32,7 @@
 //     GetConnections read pageSize and fall back to pagesize. Elsewhere in the
 //     tree there are at least two more spellings: FetchSmiResult reads only
 //     pageSize, and the credentials handler reads page_size. The fake models
-//     the endpoints it serves; see pageSizeSpelling in server.go. Sending the
+//     the endpoints it serves; see pageStyles and styleFor in server.go. The
 //     lowercase spelling is safe on every endpoint the fake serves.
 //
 // Cluster scoping
@@ -85,9 +85,11 @@
 //
 // Designs and topology
 //
-//   - MesheryPattern.PatternFile is a JSON string under the camelCase key
-//     patternFile (server/models/meshery_pattern.go:91), not a nested object.
-//     Older releases spelled the key pattern_file.
+//   - MesheryPattern.PatternFile is a string under the camelCase key
+//     patternFile (server/models/meshery_pattern.go:91), not a nested object,
+//     and its encoding varies by endpoint: YAML from GET /api/pattern, JSON
+//     from GET /api/pattern/{id}, measured six designs for six against a live
+//     server. Older releases spelled the key pattern_file.
 //   - asDesign=true clears the flat resources list and returns a component graph
 //     instead. Meshery's published v0.9 REST reference puts it as "If true then
 //     the response is returned as a design and resources are omitted". Both keys

@@ -245,7 +245,8 @@ func defaultOr(v, fallback string) string {
 // in a way that endpoint does not read.
 //
 // Meshery is inconsistent here and fails silently: most handlers read only the
-// lowercase pagesize, so a client sending pageSize gets the default of 25 and no
+// lowercase pagesize, so a client sending pageSize gets that endpoint's own
+// default (10 or 25, it varies) and no
 // error. Only getPaginationParams and GetConnections read the camelCase spelling
 // at all. Sending the lowercase spelling is safe everywhere the fake serves,
 // which is what this recommends when it fails.

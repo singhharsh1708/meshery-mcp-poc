@@ -390,7 +390,7 @@ func styleFor(path string) pageStyle {
 // pageParams reads the pagination parameters the way the given endpoint does.
 //
 // A client that sends pageSize to an endpoint reading only pagesize gets the
-// default of 25 and no error.
+// default, which varies by endpoint, and no error.
 // reportedSize is the page size to echo in a response envelope. There is no
 // limit to report when the caller asked for everything, so the row count stands
 // in rather than leaking the sentinel.

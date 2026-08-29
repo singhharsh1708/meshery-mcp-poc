@@ -26,8 +26,9 @@ Meshery has several endpoints that answer a wrong request with `200 OK` and
 nothing in it. `GET /api/system/meshsync/resources` filters with
 `cluster_id IN (?)`, so a missing filter binds an empty slice and the cluster
 reads as empty. Pagination is zero-based on both of Meshery's offset paths, so a
-client that opens at page 1 skips the first page of every list. Most handlers
-read only the lowercase `pagesize` and ignore `pageSize` without saying so. None
+client that opens at page 1 skips the first page of every list. Half the
+measured endpoints read only the lowercase `pagesize` and ignore `pageSize`
+without saying so, and the defaults differ too. None
 of these produce an error, and an AI client presents every one of them as an
 answer.
 
@@ -60,8 +61,8 @@ Reproduce with `./mutation_check.sh`.
 
 ## What it reproduces
 
-Every behaviour below is taken from a handler in `meshery/meshery` at commit
-`e6ed2de`, cited in `doc.go` next to the code that reproduces it.
+The behaviours below come from `meshery/meshery` at commit `e6ed2de`. Most are
+reproduced by this fake and cited in `doc.go`; a few are recorded as context.
 
 **Authentication.** The two credentials are not symmetric.
 `RemoteProvider.GetToken` reads `req.Cookie("token")` and nothing else, so an
@@ -84,7 +85,9 @@ explicitly excludes from the `HandleUnAuthenticated` branch, so the request fall
 through to `LoginHandler`: a non-GET gets a bare `404`, and a GET is redirected
 off-host to the remote provider's own login URL. A token that is present but
 invalid is the case that does reach `HandleUnAuthenticated`, which stays on
-Meshery and redirects to `/auth/login` or `/provider`.
+Meshery and redirects to `/auth/login` (or to `/provider` when the provider
+arrived by header or query rather than cookie, a branch the fake does not
+model).
 
 The two outcomes fail differently. Anything that redirects, which is the gate,
 the no-token GET and the invalid-token case, ends with a redirect-following
@@ -148,8 +151,10 @@ than accepting both everywhere, because accepting both is precisely how a mock
 hides this. `AssertPageSizeSpelling` names the spelling that endpoint reads. The
 lowercase spelling is safe on every endpoint the fake serves.
 
-**Designs.** `patternFile` is a JSON *string* under a camelCase key. Decoding it
-as a nested object, or reading only the older `pattern_file`, yields an empty
+**Designs.** `patternFile` is a *string* under a camelCase key, and which
+encoding depends on the endpoint: YAML from the list, JSON by ID, as the
+live-verified section below sets out. Decoding it as a nested object, reading
+only the older `pattern_file`, or handling only one encoding, yields an empty
 design and no error.
 
 **Topology.** `?asDesign=true` empties the flat `resources` list and returns a
@@ -179,8 +184,8 @@ worst thing an assertion can do.
 
 ## Verified against a running Meshery
 
-Every behaviour here was read out of `meshery/meshery` at commit `e6ed2de`, and
-the ones observable from outside were then checked against a Meshery Server
+The behaviours here started from `meshery/meshery` source at commit `e6ed2de`,
+and the ones observable from outside were then checked against a Meshery Server
 built from that same commit and run locally.
 
 Building it is the part that has stopped people. The published image is amd64
@@ -192,7 +197,7 @@ cd meshery/server/cmd && go build -o meshery-server .
 PORT=9081 PROVIDER=Local KEYS_PATH=../../server/permissions/keys.csv ./meshery-server
 ```
 
-It seeds itself with 355 designs and 292 models, which is enough to exercise
+It seeds itself with roughly 355 designs and 292 models, which is enough to exercise
 pagination and the design endpoints for real. Confirmed:
 
 ```text
@@ -274,5 +279,6 @@ how the package's own tests check that each one fires on a client that is wrong.
 
 ## Status
 
-Stdlib-only, so it lifts into another repository as-is. Apache 2.0, matching
-Meshery.
+The package itself is stdlib-only, so it lifts into another repository as-is;
+one test, the positive control that drives this repo's own client, stays
+behind. Apache 2.0, matching Meshery.

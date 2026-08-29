@@ -35,8 +35,12 @@ era: legacy
   server/discover     no  (-32601: Method server/discover not found)
   modern request      yes
   modern result shape no
+  Legacy only. A modern client that skips the server/discover probe is at risk.
   Ran a request declaring protocolVersion 2026-07-28 and answered in the legacy
-  shape, with no error and no version acknowledgement.
+  shape, with no error and no version acknowledgement. A client reading only
+  content cannot tell it was downgraded.
+  server/discover fails deterministically (-32601: Method server/discover not
+  found), which is the probe the spec tells stdio clients to send first.
 exit 1
 
 $ mcpera ./dualera ./legacy-server
@@ -74,9 +78,12 @@ server/discover
   instructions the wrapped server reported during the bridge's own handshake, so
   a modern client sees what that server really advertises rather than a guess.
 - A request carrying a modern `protocolVersion` in `_meta` is forwarded onto the
-  established session, and its result comes back with `resultType` and
-  `serverInfo`. Those two markers are the only thing on the wire distinguishing
-  a modern peer from a silent downgrade, which is the whole point.
+  established session, and an object result comes back with `resultType` and
+  `serverInfo` added. Those two markers are the only thing on the wire
+  distinguishing a modern peer from a silent downgrade, which is the whole
+  point. A legal `null` result passes through untouched, since it carries
+  nowhere to put a marker, and a reply bearing neither result nor error is
+  answered with an error rather than an invented success.
 - Errors from the wrapped server are passed through as errors. Turning a failure
   into a success would be the same class of bug this exists to remove.
 - The bridge's own handshake runs under request ids from a reserved high range,

@@ -57,7 +57,7 @@ v1.7.0   {"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{...}},
 v0.58.0 executed the tool for a client it never handshook with, and answered in
 the old shape.
 
-The spec's own mitigation holds up: it tells stdio clients to send
+The spec's own mitigation holds up: it says stdio clients SHOULD send
 `server/discover` first so the mismatch fails deterministically, and on v0.58.0
 that probe does fail cleanly with `-32601`. The hazard is only for a client that
 skips it.
@@ -117,7 +117,7 @@ endpoint directly and needs a server already listening, plus the names of two
 tools it is safe to run.
 
 The rows above are one and two-tool servers, not the SDKs in full. They say what
-these SDKs do on a default setup, which is what an MCP server author gets by
-following each README.
+these SDKs do on a default setup, plus the one documented flag the go-sdk needs
+before it will speak `2026-07-28` over HTTP at all.
 
 
