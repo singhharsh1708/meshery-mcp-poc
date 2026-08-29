@@ -223,3 +223,118 @@ func TestUnconfiguredClientReportsWhy(t *testing.T) {
 		t.Errorf("error = %q, want the underlying reason preserved", err)
 	}
 }
+
+// A Kubernetes kind is conventionally "Secret", but nothing stops a caller, or
+// a model, asking with different casing, and Meshery's own matching is not
+// guaranteed to be case-sensitive. The refusal must not hinge on the spelling.
+func TestSecretRefusalIsCaseInsensitive(t *testing.T) {
+	for _, kind := range []string{"Secret", "secret", "SECRET", "sEcReT", " Secret "} {
+		called := false
+		c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			_, _ = w.Write([]byte(`{"page":0,"pageSize":25,"totalCount":0,"resources":[]}`))
+		}))
+		_, err := c.ListKubernetesResources(context.Background(), "c1", kind, "", 0, 25)
+		srv.Close()
+
+		if !errors.Is(err, ErrSecretKindRefused) {
+			t.Errorf("kind %q: err = %v, want ErrSecretKindRefused", kind, err)
+		}
+		if called {
+			t.Errorf("kind %q: the request was sent to Meshery before refusing", kind)
+		}
+	}
+}
+
+// The response-side filter must drop a Secret row however the server spells it.
+func TestSecretRowsAreDroppedWhateverTheCasing(t *testing.T) {
+	body := `{"page":0,"pageSize":25,"totalCount":3,"resources":[
+		{"kind":"Pod","apiVersion":"v1","metadata":{"name":"web","namespace":"prod"}},
+		{"kind":"secret","apiVersion":"v1","metadata":{"name":"db-password","namespace":"prod"}},
+		{"kind":"SECRET","apiVersion":"v1","metadata":{"name":"tls-key","namespace":"prod"}}]}`
+
+	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	out, err := c.ListKubernetesResources(context.Background(), "c1", "", "", 0, 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range out.Resources {
+		if strings.EqualFold(r.Kind, "Secret") {
+			t.Errorf("a Secret reached the caller: kind=%q name=%q", r.Kind, r.Metadata.Name)
+		}
+	}
+	if int(out.TotalCount) != len(out.Resources) {
+		t.Errorf("totalCount %d disagrees with %d rows returned", out.TotalCount, len(out.Resources))
+	}
+}
+
+// An empty cluster id must be refused rather than sent, because Meshery answers
+// a request with no cluster filter with 200 and zero rows, which reads as a
+// healthy empty cluster.
+func TestEmptyClusterIDIsRefused(t *testing.T) {
+	for _, fn := range []struct {
+		name string
+		call func(*Client) error
+	}{
+		{"ListKubernetesResources", func(c *Client) error {
+			_, err := c.ListKubernetesResources(context.Background(), "", "", "", 0, 25)
+			return err
+		}},
+		{"ListWorkloads", func(c *Client) error {
+			_, err := c.ListWorkloads(context.Background(), "", "prod", 0, 25)
+			return err
+		}},
+		{"GetClusterTopology", func(c *Client) error {
+			_, err := c.GetClusterTopology(context.Background(), "")
+			return err
+		}},
+	} {
+		called := false
+		c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			called = true
+			_, _ = w.Write([]byte(`{"totalCount":0,"resources":[]}`))
+		}))
+		err := fn.call(c)
+		srv.Close()
+
+		if err == nil {
+			t.Errorf("%s: an empty cluster id should be an error, got nil", fn.name)
+		}
+		if called {
+			t.Errorf("%s: sent a request with no cluster filter, which returns 200 and nothing", fn.name)
+		}
+	}
+}
+
+// A 200 whose body is not the expected shape must not read as an empty result.
+func TestUnexpectedBodyIsNotAnEmptyAnswer(t *testing.T) {
+	for name, body := range map[string]string{
+		"bare null":       `null`,
+		"error object":    `{"error":"something went wrong","code":500}`,
+		"renamed listing": `{"designs":[{"id":"d1"}],"totalCount":3}`,
+	} {
+		c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		out, err := c.ListDesigns(context.Background(), "", 0, 10)
+		srv.Close()
+
+		if err == nil && out != nil && out.TotalCount > 0 && len(out.Patterns) == 0 {
+			t.Errorf("%s: reported totalCount=%d with zero designs and no error", name, out.TotalCount)
+		}
+		if err == nil && name == "bare null" {
+			t.Errorf("%s: a null body read as a successful empty list", name)
+		}
+	}
+}
+
+// Unconfigured must not be a booby trap when handed a nil reason.
+func TestUnconfiguredNilDoesNotPanic(t *testing.T) {
+	if _, err := Unconfigured(nil).ListDesigns(context.Background(), "", 0, 10); err == nil {
+		t.Error("expected an error from an unconfigured client")
+	}
+}

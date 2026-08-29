@@ -1,6 +1,7 @@
 package meshery
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -35,7 +36,10 @@ type Client struct {
 // on the first call, rather than exiting before a client can complete a
 // handshake and see anything at all.
 func Unconfigured(reason error) *Client {
-	return &Client{unconfigured: reason}
+	if reason == nil {
+		reason = errors.New("meshery client is not configured")
+	}
+	return &Client{unconfigured: reason, http: &http.Client{Timeout: 15 * time.Second}}
 }
 
 // NewFromEnv reads MESHERY_URL (default http://localhost:9081) and
@@ -102,8 +106,36 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 		}
 		return fmt.Errorf("meshery GET %s -> %s: %s", path, resp.Status, detail)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return fmt.Errorf("meshery GET %s: reading the response: %w", path, err)
+	}
+	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' {
+		// A bare null, an array or a scalar all decode into a zero-valued
+		// struct without erroring, which the caller cannot tell from an empty
+		// result. Meshery answers these endpoints with an object.
+		return fmt.Errorf("meshery GET %s -> 200 but the body is not a JSON object; the response shape may have changed", path)
+	}
+	return json.Unmarshal(body, out)
 }
+
+// checkListConsistency rejects a first page that claims rows and carries none.
+//
+// A 200 whose body has the right shape but the wrong key names decodes into a
+// zero-valued list with no error, and the caller cannot tell that from an empty
+// result. Meshery has renamed these payload keys before, which is why
+// GetDesignTopology already refuses a design file it cannot find. Only the first
+// page is checked: a later page legitimately runs past the end.
+func checkListConsistency(path string, page, returned int, total int64) error {
+	if page == 0 && total > 0 && returned == 0 {
+		return fmt.Errorf("meshery GET %s reported %d results but the response carried none; the response shape may have changed", path, total)
+	}
+	return nil
+}
+
+// maxResponseBytes bounds a response read. Meshery's list endpoints page, so a
+// legitimate body is far smaller than this.
+const maxResponseBytes = 32 << 20
 
 // Pattern is a Meshery design summary (GET /api/pattern).
 type Pattern struct {
@@ -131,7 +163,13 @@ func (c *Client) ListDesigns(ctx context.Context, search string, page, pageSize 
 		q.Set("search", search)
 	}
 	var out PatternsResponse
-	return &out, c.get(ctx, "/api/pattern", q, &out)
+	if err := c.get(ctx, "/api/pattern", q, &out); err != nil {
+		return nil, err
+	}
+	if err := checkListConsistency("/api/pattern", page, len(out.Patterns), int64(out.TotalCount)); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 type k8sMeta struct {
@@ -170,7 +208,7 @@ var ErrSecretKindRefused = errors.New("this server does not return Kubernetes Se
 // omits those columns and Secret data / last-applied-config are never
 // serialized; Secrets are excluded outright as a second layer.
 func (c *Client) ListKubernetesResources(ctx context.Context, clusterID, kind, namespace string, page, pageSize int) (*MeshSyncResponse, error) {
-	if kind == "Secret" {
+	if isSecretKind(kind) {
 		return nil, ErrSecretKindRefused
 	}
 	if clusterID == "" {
@@ -195,6 +233,9 @@ func (c *Client) ListKubernetesResources(ctx context.Context, clusterID, kind, n
 	if err := c.get(ctx, "/api/system/meshsync/resources", q, &out); err != nil {
 		return nil, err
 	}
+	if err := checkListConsistency("/api/system/meshsync/resources", page, len(out.Resources), out.TotalCount); err != nil {
+		return nil, err
+	}
 	excludeSecretResources(&out)
 	return &out, nil
 }
@@ -204,7 +245,7 @@ func (c *Client) ListKubernetesResources(ctx context.Context, clusterID, kind, n
 func excludeSecretResources(out *MeshSyncResponse) {
 	filtered := out.Resources[:0]
 	for _, r := range out.Resources {
-		if r.Kind == "Secret" {
+		if isSecretKind(r.Kind) {
 			if out.TotalCount > 0 {
 				out.TotalCount--
 			}
@@ -213,6 +254,14 @@ func excludeSecretResources(out *MeshSyncResponse) {
 		filtered = append(filtered, r)
 	}
 	out.Resources = filtered
+}
+
+// isSecretKind reports whether a kind names Kubernetes Secrets. The comparison
+// is case-insensitive and ignores surrounding space on purpose: a guarantee
+// that turns on exact spelling is not a guarantee, and the caller here is
+// frequently a model rather than a program.
+func isSecretKind(kind string) bool {
+	return strings.EqualFold(strings.TrimSpace(kind), "Secret")
 }
 
 // setClusterIDs writes the JSON-encoded array form that
@@ -281,7 +330,13 @@ func (c *Client) ListKubernetesContexts(ctx context.Context, page, pageSize int)
 	q.Set("page", strconv.Itoa(page))
 	q.Set("pagesize", strconv.Itoa(pageSize))
 	var out ContextsResponse
-	return &out, c.get(ctx, "/api/system/kubernetes/contexts", q, &out)
+	if err := c.get(ctx, "/api/system/kubernetes/contexts", q, &out); err != nil {
+		return nil, err
+	}
+	if err := checkListConsistency("/api/system/kubernetes/contexts", page, len(out.Contexts), int64(out.TotalCount)); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // Connection is a Meshery connection (subset of GET /api/integrations/connections).
@@ -311,5 +366,11 @@ func (c *Client) ListKubernetesConnections(ctx context.Context, page, pageSize i
 	q.Set("pagesize", strconv.Itoa(pageSize))
 	q.Add("kind", "kubernetes")
 	var out ConnectionsResponse
-	return &out, c.get(ctx, "/api/integrations/connections", q, &out)
+	if err := c.get(ctx, "/api/integrations/connections", q, &out); err != nil {
+		return nil, err
+	}
+	if err := checkListConsistency("/api/integrations/connections", page, len(out.Connections), int64(out.TotalCount)); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

@@ -1056,3 +1056,66 @@ func TestPublicExemptionStopsAtAPathBoundary(t *testing.T) {
 		t.Errorf("registry reads should stay exempt, got: %s", msg)
 	}
 }
+
+// An empty or null clusterIds array is the empty IN clause this assertion
+// exists to catch, so it must fail even when the test names no expected id.
+func TestClusterScopedRejectsAnEmptyFilter(t *testing.T) {
+	for _, q := range []string{`clusterIds=[]`, `clusterIds=null`, `clusterIds=[""]`} {
+		s := mesherytest.New(t)
+		authedGet(t, s, "/api/system/meshsync/resources", q)
+
+		failed, msg := (&recorder{}).run(func(tt mesherytest.T) {
+			s.AssertClusterScoped(tt, "/api/system/meshsync/resources")
+		})
+		if !failed {
+			t.Errorf("%s: passed, but it filters to nothing", q)
+		} else if !strings.Contains(msg, "cluster") {
+			t.Errorf("%s: failure should mention the cluster filter, got %s", q, msg)
+		}
+	}
+}
+
+// The summary branch must reject a blank value too, not just an absent key.
+func TestClusterScopedRejectsABlankSummaryFilter(t *testing.T) {
+	s := mesherytest.New(t)
+	authedGet(t, s, "/api/system/meshsync/resources/summary", "clusterId=")
+
+	if failed, _ := (&recorder{}).run(func(tt mesherytest.T) {
+		s.AssertClusterScoped(tt, "/api/system/meshsync/resources/summary")
+	}); !failed {
+		t.Error("a blank clusterId passed the presence check")
+	}
+}
+
+// A repeated key widens a filter, and AssertQuery must not read only the first.
+func TestAssertQueryNoticesARepeatedKey(t *testing.T) {
+	s := mesherytest.New(t)
+	authedGet(t, s, "/api/integrations/connections", "kind=kubernetes&kind=aws")
+
+	if failed, _ := (&recorder{}).run(func(tt mesherytest.T) {
+		s.AssertQuery(tt, "/api/integrations/connections", "kind", "kubernetes")
+	}); !failed {
+		t.Error("a second kind= value slipped past the assertion")
+	}
+}
+
+// The paging assertion must judge the value, not its spelling: "00" and "+0"
+// are page zero, and a correct client should not be failed for writing one.
+func TestZeroBasedPagingJudgesTheValueNotTheSpelling(t *testing.T) {
+	for _, page := range []string{"0", "00", "+0"} {
+		s := mesherytest.New(t)
+		authedGet(t, s, "/api/pattern", "page="+page)
+		if failed, msg := (&recorder{}).run(func(tt mesherytest.T) {
+			s.AssertZeroBasedPaging(tt, "/api/pattern")
+		}); failed {
+			t.Errorf("page=%q is page zero but was flagged: %s", page, msg)
+		}
+	}
+	s := mesherytest.New(t)
+	authedGet(t, s, "/api/pattern", "page=01")
+	if failed, _ := (&recorder{}).run(func(tt mesherytest.T) {
+		s.AssertZeroBasedPaging(tt, "/api/pattern")
+	}); !failed {
+		t.Error("page=01 is page one and should be flagged")
+	}
+}

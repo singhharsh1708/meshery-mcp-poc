@@ -142,8 +142,14 @@ func orNone(s string) string {
 func (s *Server) AssertQuery(t T, path, key, want string) {
 	t.Helper()
 	r := s.lastTo(t, path)
-	if got := r.Query.Get(key); got != want {
-		t.Errorf("%s: %s = %q, want %q (full query: %s)", path, key, got, want, r.Query.Encode())
+	got := r.Query[key]
+	if len(got) > 1 {
+		t.Errorf("%s: %s appears %d times (%v). A repeated key widens the filter past what this asserts, and Meshery reads several of these as a list",
+			path, key, len(got), got)
+		return
+	}
+	if r.Query.Get(key) != want {
+		t.Errorf("%s: %s = %q, want %q (full query: %s)", path, key, r.Query.Get(key), want, r.Query.Encode())
 	}
 }
 
@@ -169,9 +175,9 @@ func (s *Server) AssertClusterScoped(t T, path string, want ...string) {
 	r := s.lastTo(t, path)
 
 	if path == "/api/system/meshsync/resources/summary" {
-		got := r.Query["clusterId"]
+		got := nonEmpty(r.Query["clusterId"])
 		if len(got) == 0 {
-			t.Fatalf("%s: no clusterId. This endpoint takes a repeated singular clusterId and answers 400 without one, unlike its sibling which takes a JSON clusterIds array",
+			t.Fatalf("%s: no usable clusterId. This endpoint takes a repeated singular clusterId and answers 400 when the key is absent, but its guard is only a presence check, so a blank value passes it and scopes to nothing",
 				path)
 		}
 		assertSameSet(t, path, "clusterId", got, want)
@@ -183,12 +189,29 @@ func (s *Server) AssertClusterScoped(t T, path string, want ...string) {
 		t.Fatalf("%s: no clusterIds. Meshery filters with cluster_id IN (?) against whatever it is given, so an absent filter is an empty IN clause: 200 with zero rows, which reads as an empty cluster",
 			path)
 	}
-	var got []string
-	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+	var parsed []string
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		t.Fatalf("%s: clusterIds = %q, which is not a JSON array. The handler json.Unmarshals this value into a []string and answers 400 when that fails, so a bare id is rejected outright rather than filtering by it",
 			path, raw)
 	}
+	got := nonEmpty(parsed)
+	if len(got) == 0 {
+		t.Fatalf("%s: clusterIds = %q, which names no cluster. Meshery binds that into cluster_id IN (?) exactly as it does an absent filter, so it matches no rows and answers 200, which reads as an empty cluster",
+			path, raw)
+	}
 	assertSameSet(t, path, "clusterIds", got, want)
+}
+
+// nonEmpty drops blank entries, which scope to nothing and so cannot count as
+// a filter.
+func nonEmpty(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if strings.TrimSpace(v) != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // assertSameSet compares the two sets in both directions. A missing id means the
@@ -227,7 +250,14 @@ func (s *Server) AssertZeroBasedPaging(t T, path string) {
 	t.Helper()
 	r := s.lastTo(t, path)
 	page := r.Query.Get("page")
-	if page == "" || page == "0" {
+	if page == "" {
+		return
+	}
+	// Judge the number the way the server does, not how it was written. Both
+	// getPaginationParams and this package's pageParams do strconv.Atoi and
+	// ignore the error, so anything unparsable is page zero to them. An
+	// assertion that disagreed would fail a client the server treats as correct.
+	if n, _ := strconv.Atoi(page); n <= 0 {
 		return
 	}
 	t.Errorf("%s: page = %q. Meshery computes offset = page * pageSize on both pagination paths, so page=1 skips the first %s results rather than returning them",

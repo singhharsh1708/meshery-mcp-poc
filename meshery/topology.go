@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -72,6 +73,11 @@ type Topology struct {
 // when it is set, evaluates relationships at depth 1, and has no timeout guard
 // on that path.
 func (c *Client) GetClusterTopology(ctx context.Context, clusterID string) (*Topology, error) {
+	// Without a cluster filter Meshery answers 200 with nothing, which reads as
+	// an empty cluster rather than as the missing argument it is.
+	if clusterID == "" {
+		return nil, errors.New("cluster id is required; list the Kubernetes contexts first to obtain one")
+	}
 	q := url.Values{}
 	q.Set("asDesign", "true")
 	q.Set("page", "0")
@@ -110,7 +116,7 @@ func (c *Client) GetClusterTopology(ctx context.Context, clusterID string) (*Top
 func excludeSecrets(in []TopologyComponent) (kept []TopologyComponent, dropped int) {
 	kept = make([]TopologyComponent, 0, len(in))
 	for _, c := range in {
-		if c.Component.Kind == "Secret" {
+		if isSecretKind(c.Component.Kind) {
 			dropped++
 			continue
 		}
@@ -212,6 +218,10 @@ func decodeDesignFile(raw json.RawMessage) (*patternFile, error) {
 // cluster. Secrets are excluded and spec/status/labels/annotations are never
 // requested, matching ListKubernetesResources.
 func (c *Client) ListWorkloads(ctx context.Context, clusterID, namespace string, page, pageSize int) (*MeshSyncResponse, error) {
+	// Same reason as GetClusterTopology: an absent filter is 200 with nothing.
+	if clusterID == "" {
+		return nil, errors.New("cluster id is required; list the Kubernetes contexts first to obtain one")
+	}
 	if pageSize == 0 {
 		pageSize = 25
 	}
@@ -232,12 +242,6 @@ func (c *Client) ListWorkloads(ctx context.Context, clusterID, namespace string,
 	if err := c.get(ctx, "/api/system/meshsync/resources", q, &out); err != nil {
 		return nil, err
 	}
-	filtered := out.Resources[:0]
-	for _, r := range out.Resources {
-		if r.Kind != "Secret" {
-			filtered = append(filtered, r)
-		}
-	}
-	out.Resources = filtered
+	excludeSecretResources(&out)
 	return &out, nil
 }
