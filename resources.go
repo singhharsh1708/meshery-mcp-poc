@@ -171,7 +171,10 @@ func addTopologyResources(s *mcp.Server, c *meshery.Client) {
 			// Either empty would drop its filter and silently widen the read.
 			return nil, mcp.ResourceNotFoundError(req.Params.URI)
 		}
-		r, err := c.ListWorkloads(ctx, clusterID, namespace, 0, 0)
+		// A resource URI carries no page variable, so one default page would
+		// present the first 25 rows as the whole namespace with nothing saying
+		// otherwise. Ask for every row instead.
+		r, err := c.ListWorkloads(ctx, clusterID, namespace, 0, meshery.AllPages)
 		if err != nil {
 			return nil, err
 		}

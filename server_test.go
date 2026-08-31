@@ -29,7 +29,14 @@ func mockMeshery() *httptest.Server {
 			_, _ = w.Write([]byte(`{"error":"clusterIds is required"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"Pod":1,"Deployment":3}`))
+		// The shape and the capitalization are what a live Meshery answers: the
+		// kinds entries are a Go struct with no JSON tags, so they arrive
+		// capitalized, and labels is null rather than [] when nothing matched.
+		_, _ = w.Write([]byte(`{"kinds":[
+			{"Kind":"Pod","Model":"kubernetes","Count":1},
+			{"Kind":"Deployment","Model":"kubernetes","Count":3},
+			{"Kind":"Secret","Model":"kubernetes","Count":2}],
+			"namespaces":["default"],"labels":null}`))
 	})
 	mux.HandleFunc("/api/system/kubernetes/contexts", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"page":0,"pageSize":25,"totalCount":1,"contexts":[
@@ -91,7 +98,15 @@ func TestServerEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(rr.Contents) == 0 || !strings.Contains(rr.Contents[0].Text, "Deployment") {
-		t.Fatalf("resource read = %+v", rr.Contents)
+		t.Fatalf("resource read carried no summary: %d contents", len(rr.Contents))
+	}
+	// The summary is a per-kind census, so it is the one path that can report
+	// Secrets without naming one. It is filtered like the others, and the count
+	// it removed is reported rather than dropped silently.
+	if summary := rr.Contents[0].Text; strings.Contains(summary, `"Kind":"Secret"`) {
+		t.Fatalf("Secret kind leaked into the summary: %s", summary)
+	} else if !strings.Contains(summary, `"excludedSecrets":2`) {
+		t.Fatalf("summary should report the 2 excluded Secrets: %s", summary)
 	}
 
 	// The contexts tool is the entry point for every cluster-scoped call, so it

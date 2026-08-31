@@ -222,12 +222,9 @@ func (c *Client) ListWorkloads(ctx context.Context, clusterID, namespace string,
 	if clusterID == "" {
 		return nil, errors.New("cluster id is required; list the Kubernetes contexts first to obtain one")
 	}
-	if pageSize == 0 {
-		pageSize = 25
-	}
 	q := url.Values{}
 	q.Set("page", strconv.Itoa(page))
-	q.Set("pagesize", strconv.Itoa(pageSize))
+	q.Set("pagesize", pageSizeParam(pageSize, 25))
 	if namespace != "" {
 		q.Add("namespace", namespace)
 	}
@@ -240,6 +237,12 @@ func (c *Client) ListWorkloads(ctx context.Context, clusterID, namespace string,
 	}
 	var out MeshSyncResponse
 	if err := c.get(ctx, "/api/system/meshsync/resources", q, &out); err != nil {
+		return nil, err
+	}
+	// Every sibling list method checks this. Without it a renamed resources key
+	// decodes into an empty slice beside a non-zero count, which reads as an
+	// empty namespace rather than as the shape change it is.
+	if err := checkListConsistency("/api/system/meshsync/resources", page, len(out.Resources), out.TotalCount); err != nil {
 		return nil, err
 	}
 	excludeSecretResources(&out)

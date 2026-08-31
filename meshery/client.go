@@ -73,7 +73,16 @@ func New(baseURL, token, provider string) *Client {
 		baseURL:  baseURL,
 		token:    token,
 		provider: provider,
-		http:     &http.Client{Timeout: 15 * time.Second},
+		http: &http.Client{
+			Timeout: 15 * time.Second,
+			// Meshery answers an unauthenticated or provider-less request with a
+			// 302 to a sign-in page that serves HTML under a 200. Following it
+			// turns an auth failure into a body that parses as neither an object
+			// nor an error, so the caller is told the response shape changed.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
@@ -96,6 +105,11 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 		return err
 	}
 	defer resp.Body.Close()
+	if loc := resp.Header.Get("Location"); resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		// The redirect target is the provider gate or the sign-in page. Naming
+		// it separates an expired session from a Meshery that changed shape.
+		return fmt.Errorf("meshery GET %s -> %s redirecting to %s; the session cookies are not accepted, so re-authenticate and select a provider", path, resp.Status, loc)
+	}
 	if resp.StatusCode != http.StatusOK {
 		// Include Meshery's own message. Without it the model receives a bare
 		// status line and cannot tell a missing filter from an expired session.
@@ -136,6 +150,25 @@ func checkListConsistency(path string, page, returned int, total int64) error {
 // maxResponseBytes bounds a response read. Meshery's list endpoints page, so a
 // legitimate body is far smaller than this.
 const maxResponseBytes = 32 << 20
+
+// AllPages asks an endpoint for every row instead of one page.
+//
+// Meshery's persisters treat the page size "all" as "apply no limit"
+// (server/handlers/utils.go:101), so it is not a size at all and no arithmetic
+// is done with it. Measured against a live server holding 30 rows: pagesize=all
+// returns all 30 and echoes pageSize as the row count.
+const AllPages = -1
+
+// pageSizeParam renders a page size for the wire.
+func pageSizeParam(pageSize, byDefault int) string {
+	if pageSize == AllPages {
+		return "all"
+	}
+	if pageSize == 0 {
+		pageSize = byDefault
+	}
+	return strconv.Itoa(pageSize)
+}
 
 // Pattern is a Meshery design summary (GET /api/pattern).
 type Pattern struct {
@@ -190,6 +223,15 @@ type MeshSyncResponse struct {
 	PageSize   int           `json:"pageSize"`
 	TotalCount int64         `json:"totalCount"`
 	Resources  []K8sResource `json:"resources"`
+
+	// ExcludedSecrets counts the Secrets removed from Resources, so a filtered
+	// list is distinguishable from one that never held any.
+	ExcludedSecrets int `json:"excludedSecrets"`
+	// TotalCountFiltered reports whether TotalCount counts the same rows
+	// Resources does. It is false for a paged read, where Secrets on pages this
+	// response does not carry cannot be counted and TotalCount is left as the
+	// server's own unfiltered total.
+	TotalCountFiltered bool `json:"totalCountFiltered"`
 }
 
 // ErrSecretKindRefused is returned when a caller asks specifically for Secrets.
@@ -242,18 +284,31 @@ func (c *Client) ListKubernetesResources(ctx context.Context, clusterID, kind, n
 
 // excludeSecretResources drops Secret rows and reduces TotalCount to match, so
 // the count and the list cannot disagree.
+// excludeSecretResources drops Secrets from a resource page.
+//
+// TotalCount is the server's count over every row matching the query, not over
+// the rows in this response. Subtracting the Secrets found on one page from it
+// produces a number that counts neither set: it still includes the Secrets on
+// every page not fetched. So it is only corrected when this response carries
+// the whole result, which is what AllPages asks for; otherwise it is left as
+// the server reported it and TotalCountFiltered says so.
 func excludeSecretResources(out *MeshSyncResponse) {
+	complete := int64(len(out.Resources)) == out.TotalCount
 	filtered := out.Resources[:0]
+	dropped := 0
 	for _, r := range out.Resources {
 		if isSecretKind(r.Kind) {
-			if out.TotalCount > 0 {
-				out.TotalCount--
-			}
+			dropped++
 			continue
 		}
 		filtered = append(filtered, r)
 	}
 	out.Resources = filtered
+	out.ExcludedSecrets = dropped
+	out.TotalCountFiltered = complete
+	if complete {
+		out.TotalCount = int64(len(filtered))
+	}
 }
 
 // isSecretKind reports whether a kind names Kubernetes Secrets. The comparison
@@ -295,7 +350,54 @@ func (c *Client) GetMeshSyncSummary(ctx context.Context, clusterIDs ...string) (
 		q.Add("clusterId", id)
 	}
 	var raw json.RawMessage
-	return raw, c.get(ctx, "/api/system/meshsync/resources/summary", q, &raw)
+	if err := c.get(ctx, "/api/system/meshsync/resources/summary", q, &raw); err != nil {
+		return nil, err
+	}
+	return excludeSecretKindCount(raw)
+}
+
+// summaryEnvelope is the summary response. The kinds entries carry no JSON tags
+// on the server side, so they arrive capitalized; measured against a live
+// server: {"kinds":[{"Kind":"Pod","Model":"kubernetes","Count":5}],...}.
+type summaryEnvelope struct {
+	Kinds []struct {
+		Kind  string `json:"Kind"`
+		Model string `json:"Model"`
+		Count int64  `json:"Count"`
+	} `json:"kinds"`
+	Namespaces []string        `json:"namespaces"`
+	Labels     json.RawMessage `json:"labels"`
+}
+
+// excludeSecretKindCount removes the Secret row from a summary.
+//
+// Every other path that returns discovered resources drops Secrets, but the
+// summary is a per-kind census, so passing it through unchanged reports how
+// many Secrets a cluster holds. That is not a name or a payload, and it is a
+// smaller disclosure than the other paths guard against, but it makes the
+// posture inconsistent: one resource says Secrets do not exist while another
+// counts them. It is reported the way the topology paths report theirs.
+func excludeSecretKindCount(raw json.RawMessage) (json.RawMessage, error) {
+	var env summaryEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		// An unreadable summary is not silently forwarded: it could carry the
+		// row this function exists to remove.
+		return nil, fmt.Errorf("meshery GET /api/system/meshsync/resources/summary: the summary did not parse, so the Secret count could not be removed: %w", err)
+	}
+	kept := env.Kinds[:0]
+	excluded := int64(0)
+	for _, k := range env.Kinds {
+		if isSecretKind(k.Kind) {
+			excluded += k.Count
+			continue
+		}
+		kept = append(kept, k)
+	}
+	env.Kinds = kept
+	return json.Marshal(struct {
+		summaryEnvelope
+		ExcludedSecrets int64 `json:"excludedSecrets"`
+	}{env, excluded})
 }
 
 // KubernetesContext ties together the three identifiers Meshery uses for a
