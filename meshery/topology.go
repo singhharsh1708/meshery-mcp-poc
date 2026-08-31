@@ -94,6 +94,13 @@ func (c *Client) GetClusterTopology(ctx context.Context, clusterID string) (*Top
 	if err := c.get(ctx, "/api/system/meshsync/resources", q, &out); err != nil {
 		return nil, err
 	}
+	// The same guard the flat list has. This path asks for every row, so a
+	// cluster the server counted rows for must produce components; a renamed
+	// design or components key would otherwise decode into an empty graph and
+	// read as a cluster holding nothing.
+	if err := checkListConsistency("/api/system/meshsync/resources?asDesign", 0, len(out.Design.Components), out.TotalCount); err != nil {
+		return nil, err
+	}
 	kept, dropped := excludeSecrets(out.Design.Components)
 	return &Topology{
 		Name:            out.Design.Name,

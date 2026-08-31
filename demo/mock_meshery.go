@@ -42,8 +42,14 @@ func main() {
 			write(w, `{"error":"clusterIds is required"}`)
 			return
 		}
-		write(w, `{"kinds":[{"kind":"Pod","count":12},{"kind":"Deployment","count":4},{"kind":"Service","count":5}],
-			"namespaces":["default","kube-system","payments"]}`)
+		// Capitalized keys, because the server struct carries no JSON tags, and
+		// a Secret, because the resource list below has one: a census that
+		// omitted it would let the demo claim a filter it never exercised.
+		write(w, `{"kinds":[{"Kind":"Pod","Model":"kubernetes","Count":12},
+			{"Kind":"Deployment","Model":"kubernetes","Count":4},
+			{"Kind":"Service","Model":"kubernetes","Count":5},
+			{"Kind":"Secret","Model":"kubernetes","Count":2}],
+			"namespaces":["default","kube-system","payments"],"labels":null}`)
 	})
 
 	mux.HandleFunc("/api/system/meshsync/resources", func(w http.ResponseWriter, r *http.Request) {

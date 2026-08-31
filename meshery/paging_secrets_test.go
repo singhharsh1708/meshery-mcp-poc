@@ -173,3 +173,38 @@ func TestSummaryRefusesABodyItCannotRead(t *testing.T) {
 		t.Fatal("want an error rather than forwarding an unfiltered census")
 	}
 }
+
+// TestClusterTopologyRefusesACountWithoutComponents is the asDesign counterpart
+// of the flat list's guard. This path asks for every row, so a cluster the
+// server counted rows for has to produce components; a renamed design or
+// components key would otherwise arrive as an empty graph, which reads as a
+// cluster holding nothing.
+func TestClusterTopologyRefusesACountWithoutComponents(t *testing.T) {
+	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Nine rows counted, and the components arrive under a key this client
+		// does not read.
+		_, _ = w.Write([]byte(`{"totalCount":9,"design":{"name":"cluster","nodes":[{"id":"n1"}]}}`))
+	}))
+	defer srv.Close()
+
+	if _, err := c.GetClusterTopology(context.Background(), "c1"); err == nil {
+		t.Fatal("want an error: nine rows were counted and no component carried")
+	}
+}
+
+// TestEmptyClusterTopologyIsNotAnError is the control. A cluster that really
+// holds nothing reports no rows and no components, and that agrees.
+func TestEmptyClusterTopologyIsNotAnError(t *testing.T) {
+	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"totalCount":0,"design":{"name":"cluster","components":[]}}`))
+	}))
+	defer srv.Close()
+
+	topo, err := c.GetClusterTopology(context.Background(), "c1")
+	if err != nil {
+		t.Fatalf("an empty cluster is a valid answer: %v", err)
+	}
+	if len(topo.Components) != 0 {
+		t.Errorf("components = %d, want 0", len(topo.Components))
+	}
+}

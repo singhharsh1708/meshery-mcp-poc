@@ -378,14 +378,22 @@ func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
 // and pageSize and page_size, so consumers reading either spelling keep working
 // through the deprecation window. A client that reads only total_count works
 // here and breaks on every other list endpoint.
-func (s *Server) handleOrgs(w http.ResponseWriter, _ *http.Request) {
+// handleOrgs pages like the endpoint it stands in for. Its default page size is
+// 10, not the 25 most endpoints use, and it echoes both spellings of the size
+// and the count. Measured against a live server: pageSize and page_size both
+// come back 10 when neither is asked for.
+func (s *Server) handleOrgs(w http.ResponseWriter, r *http.Request) {
+	page, size := pageParams(r.URL.Query(), styleFor(r.URL.Path))
+	orgs := []map[string]string{{"id": s.data.OrgID, "name": "Default Org"}}
+	start, end := paginate(len(orgs), page, size)
+	reported := reportedSize(size, end-start)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"page":          0,
-		"pageSize":      25,
-		"page_size":     25,
-		"totalCount":    1,
-		"total_count":   1,
-		"organizations": []map[string]string{{"id": s.data.OrgID, "name": "Default Org"}},
+		"page":          page,
+		"pageSize":      reported,
+		"page_size":     reported,
+		"totalCount":    len(orgs),
+		"total_count":   len(orgs),
+		"organizations": orgs[start:end],
 	})
 }
 
