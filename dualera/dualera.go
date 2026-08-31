@@ -28,6 +28,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -76,8 +77,12 @@ type Bridge struct {
 	pending   map[string]chan *message
 	abandoned map[string]struct{}
 	nextID    int64
-	writeMu   sync.Mutex
-	clientMu  sync.Mutex
+	// dead records that the wrapped server's stream ended, so a later call can
+	// fail at once rather than waiting on a reply nothing will send.
+	dead       bool
+	deadReason string
+	writeMu    sync.Mutex
+	clientMu   sync.Mutex
 
 	// handshakeMu guards the one legacy session the bridge holds. A failure is
 	// deliberately not cached: the wrapped server may simply not have finished
@@ -172,10 +177,17 @@ func (b *Bridge) pumpServer() {
 }
 
 // failPending hands every waiting call an error and empties the table.
+//
+// It also records that the wrapped server is gone. Failing the calls already
+// waiting is not enough on its own: a request arriving afterwards would join an
+// empty table and wait for a reply that cannot come, holding one of the inflight
+// slots while it does. Sixty-four of those and the bridge refuses everything.
 func (b *Bridge) failPending(reason string) {
 	b.mu.Lock()
 	waiting := b.pending
 	b.pending = make(map[string]chan *message)
+	b.dead = true
+	b.deadReason = reason
 	b.mu.Unlock()
 
 	body, err := json.Marshal(map[string]any{"code": -32603, "message": reason})
@@ -352,6 +364,11 @@ func (b *Bridge) ensureHandshake(ctx context.Context) (*handshakeInfo, error) {
 // for its reply.
 func (b *Bridge) call(ctx context.Context, method string, params json.RawMessage) (*message, error) {
 	b.mu.Lock()
+	if b.dead {
+		reason := b.deadReason
+		b.mu.Unlock()
+		return nil, errors.New(reason)
+	}
 	b.nextID++
 	id := b.nextID
 	key := fmt.Sprintf("%d", id)
