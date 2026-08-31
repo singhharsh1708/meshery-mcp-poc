@@ -337,16 +337,29 @@ func TestSummaryUsesADifferentSpelling(t *testing.T) {
 
 // TestSummaryClusterIDIsAPresenceCheck covers the shape of the summary guard.
 // It tests that the clusterId key is present, not that it holds anything useful,
-// so an empty value or the literal "all" that the UI sends both sail past it and
-// come back 200 with a summary of nothing in particular.
+// so an empty value or the literal "all" that the UI sends both sail past it.
+//
+// What comes back is the trap. The value is then used as an ordinary cluster id
+// in an IN clause, so neither matches a row and every field of the summary is
+// null under a 200. Measured against a live server: clusterId=all and
+// clusterId= both return {"kinds":null,"namespaces":null,"labels":null}. "all"
+// is not a wildcard, it is a value nothing is named.
 func TestSummaryClusterIDIsAPresenceCheck(t *testing.T) {
 	s := mesherytest.New(t)
 	const path = "/api/system/meshsync/resources/summary"
 
+	// The real cluster id is the control: the same endpoint does answer. It runs
+	// first because the assertion below judges the last request to this path.
+	if out := authedGet(t, s, path, "clusterId="+s.Data().ClusterID()); out["kinds"] == nil {
+		t.Errorf("the seeded cluster should have a census: %v", out)
+	}
+
 	for _, q := range []string{"clusterId=", "clusterId=all"} {
 		out := authedGet(t, s, path, q)
-		if out["kinds"] == nil {
-			t.Errorf("%s: expected 200 with a summary, got %v", q, out)
+		for _, key := range []string{"kinds", "namespaces", "labels"} {
+			if out[key] != nil {
+				t.Errorf("%s: %s should be null, a request naming no cluster matches nothing: %v", q, key, out)
+			}
 		}
 	}
 

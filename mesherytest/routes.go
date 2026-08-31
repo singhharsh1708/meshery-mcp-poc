@@ -2,6 +2,7 @@ package mesherytest
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -165,9 +166,21 @@ func emptyDesign() map[string]any {
 // value. If true then the response is returned as a design and resources are
 // omitted". It is absent from docs/data/openapi.yml, the repository's only
 // machine-readable spec, so a test is the only thing pinning it.
+//
+// The design is built from one page, not from the whole result. The handler
+// applies Limit and Offset to the query before running it and hands the rows it
+// got to the converter (server/handlers/meshsync_handler.go:242-360), so a
+// caller asking for a graph of a large cluster on default paging gets a graph of
+// the first 25 objects while totalCount reports the whole cluster. Rendering
+// every row here instead would hide the truncation that costs a client its
+// edges.
 func (s *Server) writeAsDesign(w http.ResponseWriter, page, size int, res []Resource) {
-	components := make([]map[string]any, 0, len(res))
-	for _, r := range res {
+	total := len(res)
+	start, end := paginate(total, page, size)
+	pageRows := res[start:end]
+
+	components := make([]map[string]any, 0, len(pageRows))
+	for _, r := range pageRows {
 		components = append(components, map[string]any{
 			"id":          r.ID,
 			"displayName": r.Metadata.Name,
@@ -182,9 +195,13 @@ func (s *Server) writeAsDesign(w http.ResponseWriter, page, size int, res []Reso
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"page":       page,
-		"pageSize":   reportedSize(size, len(res)),
-		"totalCount": len(res),
+		"page": page,
+		// The echoed size is the limit when one was applied, and the row count
+		// when the caller asked for everything.
+		"pageSize": reportedSize(size, len(pageRows)),
+		// The count is over every matching row, not over the page the design was
+		// built from. The gap between the two is the truncation.
+		"totalCount": total,
 		"resources":  []Resource{}, // emptied, as the real handler does
 		"design": map[string]any{
 			"id":            "9f1c0b7a-0000-4000-8000-000000000001",
@@ -202,26 +219,91 @@ func (s *Server) writeAsDesign(w http.ResponseWriter, page, size int, res []Reso
 // handleSummary requires a repeated singular clusterId and answers 400 without
 // one, unlike its sibling above which takes a JSON array under clusterIds.
 func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
-	if len(r.URL.Query()["clusterId"]) == 0 {
+	q := r.URL.Query()
+	clusterIDs := q["clusterId"]
+	if len(clusterIDs) == 0 {
 		writeError(w, http.StatusBadRequest, "clusterIds is required")
 		return
 	}
-	counts := map[string]int{}
+	// The guard is a presence check, so an empty or unknown value passes it and
+	// then matches nothing. Repeated parameters are an IN list. Measured live:
+	// clusterId=all is not special, it is just a value nothing matches.
+	namespaceScope := q["namespace"]
+
+	// The kinds census is grouped by kind and model, and the namespace scope
+	// narrows it. The namespaces list is deliberately not narrowed: the live
+	// handler applies the namespace filter to the kinds and labels queries only,
+	// so a scoped request still reports every namespace in the cluster.
+	type kindKey struct{ kind, model string }
+	counts := map[kindKey]int64{}
+	namespaces := []string{}
+	seenNS := map[string]bool{}
+	labels := []map[string]any{}
+	seenLabel := map[string]bool{}
+
 	for _, res := range s.data.Resources {
-		counts[res.Kind]++
+		if !contains(clusterIDs, res.ClusterID) {
+			continue
+		}
+		if res.Metadata.Namespace != "" && !seenNS[res.Metadata.Namespace] {
+			seenNS[res.Metadata.Namespace] = true
+			namespaces = append(namespaces, res.Metadata.Namespace)
+		}
+		if len(namespaceScope) > 0 && !contains(namespaceScope, res.Metadata.Namespace) {
+			continue
+		}
+		// Rows with no model are dropped by HAVING model IS NOT NULL.
+		if res.Model == "" {
+			continue
+		}
+		counts[kindKey{res.Kind, res.Model}]++
+		for k, v := range res.Labels {
+			if seenLabel[k+"="+v] {
+				continue
+			}
+			seenLabel[k+"="+v] = true
+			// Only key and value are selected, so the other columns of the row
+			// come back as empty strings rather than being absent.
+			labels = append(labels, map[string]any{
+				"id": "", "unique_id": "", "kind": "", "key": k, "value": v,
+			})
+		}
 	}
+
+	// The kinds entries are a Go struct with no JSON tags on the server side, so
+	// they arrive capitalized. A client reading "kind" gets an empty string and
+	// no error.
 	kinds := make([]map[string]any, 0, len(counts))
 	for k, n := range counts {
-		kinds = append(kinds, map[string]any{"kind": k, "count": n})
+		kinds = append(kinds, map[string]any{"Kind": k.kind, "Model": k.model, "Count": n})
 	}
-	// labels is on the wire alongside kinds and namespaces. All three come back
-	// null rather than [] when the cluster holds nothing, which is what a live
-	// server with no resources returns.
-	writeJSON(w, http.StatusOK, map[string]any{
-		"kinds":      kinds,
-		"namespaces": []string{"payments", "default"},
-		"labels":     []any{},
+	sort.Slice(kinds, func(i, j int) bool {
+		return kinds[i]["Kind"].(string) < kinds[j]["Kind"].(string)
 	})
+
+	// Each of the three is scanned into a nil slice and encoded as null when
+	// nothing matched, which is what an unknown cluster id returns.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kinds":      nilIfEmptyMaps(kinds),
+		"namespaces": nilIfEmptyStrings(namespaces),
+		"labels":     nilIfEmptyMaps(labels),
+	})
+}
+
+// nilIfEmptyMaps encodes an empty result as null rather than []. gorm scans into
+// a nil slice when no row matches, and encoding/json renders that as null.
+func nilIfEmptyMaps(in []map[string]any) any {
+	if len(in) == 0 {
+		return nil
+	}
+	return in
+}
+
+func nilIfEmptyStrings(in []string) any {
+	if len(in) == 0 {
+		return nil
+	}
+	return in
 }
 
 func (s *Server) handlePatterns(w http.ResponseWriter, r *http.Request) {

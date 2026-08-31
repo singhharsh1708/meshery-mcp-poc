@@ -59,6 +59,15 @@ type Resource struct {
 	APIVersion string   `json:"apiVersion"`
 	ClusterID  string   `json:"cluster_id"`
 	Metadata   Metadata `json:"metadata"`
+
+	// Model is the registry model a resource belongs to. The summary census
+	// groups by kind and model and drops rows where it is null, so a resource
+	// without one is counted nowhere.
+	Model string `json:"model,omitempty"`
+	// Labels are returned by the summary as distinct key and value pairs. They
+	// are never returned on a resource row: the client does not ask for them,
+	// which is what keeps Secret payloads off the wire.
+	Labels map[string]string `json:"-"`
 }
 
 // Metadata is the subset of object metadata MeshSync returns by default.
@@ -129,20 +138,28 @@ func SeedData() *Data {
 		}},
 		Designs: seedDesigns(),
 		Resources: []Resource{
-			{ID: "r1", Kind: "Deployment", APIVersion: "apps/v1", ClusterID: ksid,
-				Metadata: Metadata{Name: "productpage", Namespace: "payments"}},
-			{ID: "r2", Kind: "Pod", APIVersion: "v1", ClusterID: ksid,
-				Metadata: Metadata{Name: "productpage-7d4", Namespace: "payments"}},
-			{ID: "r3", Kind: "Service", APIVersion: "v1", ClusterID: ksid,
+			{ID: "r1", Kind: "Deployment", APIVersion: "apps/v1", ClusterID: ksid, Model: "kubernetes",
+				Metadata: Metadata{Name: "productpage", Namespace: "payments"},
+				Labels:   map[string]string{"app": "productpage"}},
+			{ID: "r2", Kind: "Pod", APIVersion: "v1", ClusterID: ksid, Model: "kubernetes",
+				Metadata: Metadata{Name: "productpage-7d4", Namespace: "payments"},
+				Labels:   map[string]string{"app": "productpage"}},
+			{ID: "r3", Kind: "Service", APIVersion: "v1", ClusterID: ksid, Model: "kubernetes",
 				Metadata: Metadata{Name: "productpage-svc", Namespace: "payments"}},
-			{ID: "r4", Kind: "Secret", APIVersion: "v1", ClusterID: ksid,
+			{ID: "r4", Kind: "Secret", APIVersion: "v1", ClusterID: ksid, Model: "kubernetes",
 				Metadata: Metadata{Name: "db-credentials", Namespace: "payments"}},
+			// A second namespace, so that scoping to one is distinguishable from
+			// not scoping at all. With a single namespace the two produce the
+			// same answer and a test cannot tell a working filter from a
+			// missing one.
+			{ID: "r7", Kind: "ConfigMap", APIVersion: "v1", ClusterID: ksid, Model: "kubernetes",
+				Metadata: Metadata{Name: "cluster-settings", Namespace: "default"}},
 			// Nodes are cluster-scoped, so they carry no namespace. A cluster
 			// with none is not a cluster, and a tool that walks nodes needs
 			// something to walk.
-			{ID: "r5", Kind: "Node", APIVersion: "v1", ClusterID: ksid,
+			{ID: "r5", Kind: "Node", APIVersion: "v1", ClusterID: ksid, Model: "kubernetes",
 				Metadata: Metadata{Name: "minikube"}},
-			{ID: "r6", Kind: "Node", APIVersion: "v1", ClusterID: ksid,
+			{ID: "r6", Kind: "Node", APIVersion: "v1", ClusterID: ksid, Model: "kubernetes",
 				Metadata: Metadata{Name: "minikube-m02"}},
 		},
 	}
