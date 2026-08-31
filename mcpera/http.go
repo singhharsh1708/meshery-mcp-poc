@@ -53,18 +53,41 @@ type HTTPReport struct {
 // so point this at a server whose tools are safe to run.
 func ProbeHTTP(ctx context.Context, timeout time.Duration, url, agreeing, mismatched string, headers map[string]string) (*HTTPReport, error) {
 	rep := &HTTPReport{}
-	client := &http.Client{Timeout: timeout}
+	client := &http.Client{
+		Timeout: timeout,
+		// A redirect is not an answer about protocol eras, and following one
+		// rewrites this POST into a GET against a different URL, so whatever
+		// came back would describe neither the request nor the endpoint asked
+		// about.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 
 	status, body, err := callTool(ctx, client, url, agreeing, agreeing, headers)
 	if err != nil {
 		return nil, fmt.Errorf("calling %s: %w", agreeing, err)
 	}
 	switch {
-	case status == http.StatusOK:
+	case status != http.StatusOK:
+		rep.RefusedModern = fmt.Sprintf("%d: %s", status, firstLine(body))
+	default:
+		// JSON-RPC carries its errors in the body, so a 200 is not by itself an
+		// acceptance. A server refusing the version answers 200 with an error
+		// object, and scoring that as service would publish it in the
+		// silent-downgrade row: serving the modern era with a legacy result.
+		if code, ok := rpcErrorCode(body); ok {
+			rep.RefusedModern = fmt.Sprintf("200 with JSON-RPC error %d: %s", code, firstLine(body))
+			rep.note(fmt.Sprintf("Refused the agreeing call in the body rather than the status line, JSON-RPC error %d under HTTP 200.", code))
+			break
+		}
+		if jsonPayload(body) == nil {
+			rep.RefusedModern = fmt.Sprintf("200 with a body that is not JSON-RPC: %s", firstLine(body))
+			rep.note("Answered the agreeing call 200 with a body that is not JSON-RPC, so nothing here describes an MCP server.")
+			break
+		}
 		rep.ServesModern = true
 		rep.ModernResultIsModern = resultIsModern(body)
-	default:
-		rep.RefusedModern = fmt.Sprintf("%d: %s", status, firstLine(body))
 	}
 
 	// The header names one tool, the body names another.
@@ -91,6 +114,12 @@ func ProbeHTTP(ctx context.Context, timeout time.Duration, url, agreeing, mismat
 		// the revision specifies.
 		rep.note(fmt.Sprintf("Turned the mismatch away with JSON-RPC error %d (HTTP %d), not the %d the revision specifies.",
 			rep.MismatchCode, status, HeaderMismatchCode))
+	case status == http.StatusOK && jsonPayload(body) == nil:
+		// errorCode cannot tell a server that answered without an error from
+		// one whose body it could not read at all, and both arrive here as 0.
+		// Claiming an execution on the strength of an unreadable body would put
+		// a proxy error page or an SPA fallback in the hazard row.
+		rep.note("Answered the mismatched call 200 with a body that is not JSON-RPC, so whether the tool ran is unknown.")
 	case status == http.StatusOK:
 		rep.ExecutedMismatched = true
 		rep.note("Ran the tool named in the body while the Mcp-Name header named a different one. " +
@@ -169,17 +198,29 @@ func jsonPayload(body []byte) []byte {
 }
 
 func errorCode(body []byte) int {
+	code, _ := rpcErrorCode(body)
+	return code
+}
+
+// rpcErrorCode reports the JSON-RPC error a body carries, and whether it
+// carried one at all.
+//
+// The two are different questions and the code alone cannot separate them: a
+// body with no error, and a body that is not JSON-RPC in the first place, both
+// have no code. Reading a missing code as "the call went through" is what puts
+// a proxy error page in the executed-the-mismatch row.
+func rpcErrorCode(body []byte) (int, bool) {
 	raw := jsonPayload(body)
 	if raw == nil {
-		return 0
+		return 0, false
 	}
 	var r struct {
 		Error *rpcError `json:"error"`
 	}
 	if json.Unmarshal(raw, &r) != nil || r.Error == nil {
-		return 0
+		return 0, false
 	}
-	return r.Error.Code
+	return r.Error.Code, true
 }
 
 func resultIsModern(body []byte) bool {
