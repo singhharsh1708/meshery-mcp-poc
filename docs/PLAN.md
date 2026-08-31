@@ -170,7 +170,7 @@ can move.
 ## 8. Reference implementation
 
 The proof of concept in this repository implements phases 1 to 3 in miniature:
-four read-only tools, four resources including three URI templates with
+four read-only tools, four resources, each of them a URI template, with
 subscriptions, three prompts, both transports, CI, and tests for every guarantee
 listed above. It exists to make the constraints in section 4 concrete rather than
 theoretical, and its limitations are stated in the README.

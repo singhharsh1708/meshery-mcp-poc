@@ -159,7 +159,7 @@ npx @modelcontextprotocol/inspector ./meshery-mcp-poc
 go test ./... -race
 ```
 
-91 tests (107 including subtests) in the hermetic suite, plus 5 integration tests behind the `integration` build tag. Coverage: 76.5% on the server package, 81.3% on the Meshery client, 91.2% on `mesherytest`, 85.5% on `mcpera`, 86.7% on `dualera`. The hermetic suite runs in about 8 seconds. Every guarantee below has a test that fails if it stops holding, verified red-green rather than assumed:
+120 tests (138 including subtests) in the hermetic suite, plus 5 integration tests behind the `integration` build tag. Coverage: 78.2% on the server package, 83.3% on the Meshery client, 92.2% on `mesherytest`, 86.2% on `mcpera`, 86.5% on `dualera`. The hermetic suite runs in about 9 seconds. Every guarantee below has a test that fails if it stops holding, verified red-green rather than assumed:
 
 | Guarantee | What breaks without it |
 |---|---|
@@ -187,7 +187,7 @@ fake.AssertClusterScoped(t, "/api/system/meshsync/resources", fake.Data().Cluste
 fake.AssertZeroBasedPaging(t, "/api/pattern")
 ```
 
-A hand-written mock returns the shape the code under test expects, so it agrees with the code even where the code is wrong about Meshery. `./mesherytest/mutation_check.sh` measures the difference: it breaks this repository's Meshery client three ways and reports which suites notice.
+A hand-written mock returns the shape the code under test expects, so it agrees with the code even where the code is wrong about Meshery. `./mesherytest/mutation_check.sh` measures the difference: it breaks this repository's Meshery client four ways and reports which suites notice.
 
 | Mutation applied to the client | Hand-written MCP mock | Client tests | `mesherytest` |
 |---|---|---|---|
