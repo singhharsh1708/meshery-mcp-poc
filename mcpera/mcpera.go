@@ -139,6 +139,13 @@ func Probe(ctx context.Context, timeout time.Duration, name string, args ...stri
 		rep.DiscoverError = "no response"
 	case disc.Error != nil:
 		rep.DiscoverError = fmt.Sprintf("%d: %s", disc.Error.Code, disc.Error.Message)
+	case !describesAServer(disc.Result):
+		// A reply with no error but nothing in it is not an answer to
+		// server/discover. Counting it as one is how a server that merely
+		// tolerates the method gets published as dual-era, which is the row a
+		// client would trust most. The modern tools/list check below already
+		// requires a result; this is the same bar.
+		rep.DiscoverError = "answered without describing a server"
 	default:
 		rep.AnswersDiscover = true
 	}
@@ -175,6 +182,23 @@ func isModernResult(raw json.RawMessage) bool {
 	}
 	_, ok := r.Meta[MetaServerInfo]
 	return ok
+}
+
+// describesAServer reports whether a server/discover result carries anything.
+//
+// The revision has the method return what a client would otherwise have learned
+// from initialize, so an answer names the server, its capabilities or the
+// versions it speaks. An absent result, a null, or an empty object answers none
+// of that, and a probe cannot call a server dual-era on the strength of it.
+func describesAServer(result json.RawMessage) bool {
+	if len(result) == 0 {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(result, &fields) != nil {
+		return false
+	}
+	return len(fields) > 0
 }
 
 func (r *Report) classify() {

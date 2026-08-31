@@ -74,3 +74,29 @@ func TestSilentDowngradeNeedsBothHalves(t *testing.T) {
 		})
 	}
 }
+
+// TestDiscoverNeedsAResultThatDescribesSomething covers the gap between
+// answering a method and implementing it. A server that returns an empty
+// success to server/discover has told a client nothing about itself, and
+// counting that as an answer puts it in the dual-era row, the one a client
+// would trust most.
+func TestDiscoverNeedsAResultThatDescribesSomething(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result string
+		want   bool
+	}{
+		{"a real discover answer", `{"serverInfo":{"name":"s"},"capabilities":{}}`, true},
+		{"one field is enough", `{"protocolVersions":["2026-07-28"]}`, true},
+		{"empty object", `{}`, false},
+		{"null", `null`, false},
+		{"absent", ``, false},
+		{"not an object", `"ok"`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := describesAServer([]byte(tc.result)); got != tc.want {
+				t.Errorf("describesAServer(%s) = %v, want %v", tc.result, got, tc.want)
+			}
+		})
+	}
+}
