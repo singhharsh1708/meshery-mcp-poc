@@ -71,7 +71,11 @@ func (m *message) isResponse() bool { return m.Method == "" && len(m.ID) > 0 }
 type Bridge struct {
 	toServer   io.Writer
 	fromServer *bufio.Scanner
-	toClient   io.Writer
+	// serverStream is the reader behind fromServer, kept so Close can release a
+	// pump that is blocked reading it. The bridge does not own this stream, so
+	// it is only ever closed on an explicit Close.
+	serverStream io.Reader
+	toClient     io.Writer
 
 	mu        sync.Mutex
 	pending   map[string]chan *message
@@ -108,18 +112,24 @@ func New(toServer io.Writer, fromServer io.Reader, toClient io.Writer) *Bridge {
 	sc := bufio.NewScanner(fromServer)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	return &Bridge{
-		toServer:   toServer,
-		fromServer: sc,
-		toClient:   toClient,
-		pending:    make(map[string]chan *message),
-		abandoned:  make(map[string]struct{}),
-		nextID:     internalIDBase,
-		inflight:   make(chan struct{}, maxInflight),
+		toServer:     toServer,
+		fromServer:   sc,
+		serverStream: fromServer,
+		toClient:     toClient,
+		pending:      make(map[string]chan *message),
+		abandoned:    make(map[string]struct{}),
+		nextID:       internalIDBase,
+		inflight:     make(chan struct{}, maxInflight),
 	}
 }
 
 // Run pumps the server's output and serves the client's input until either side
 // closes. It returns the client-side error, if any.
+//
+// The server pump outlives Run. Run returns when the client's input ends, and
+// the pump is blocked reading the server, which no context can interrupt. A
+// caller that keeps running after a client disconnects should Close the bridge,
+// or it keeps one goroutine per bridge for as long as the wrapped server lives.
 func (b *Bridge) Run(ctx context.Context, fromClient io.Reader) error {
 	go b.pumpServer()
 
@@ -137,6 +147,21 @@ func (b *Bridge) Run(ctx context.Context, fromClient io.Reader) error {
 		b.handle(ctx, &msg, line)
 	}
 	return sc.Err()
+}
+
+// Close releases the server pump by closing the stream it reads, when that
+// stream can be closed. The bridge is handed its streams rather than opening
+// them, so this is the one place it touches their lifetime, and only because a
+// read blocked in the pump cannot be cancelled any other way.
+//
+// A bridge whose client has gone but whose server is still up keeps one
+// goroutine until this is called.
+func (b *Bridge) Close() error {
+	c, ok := b.serverStream.(io.Closer)
+	if !ok {
+		return nil
+	}
+	return c.Close()
 }
 
 // pumpServer routes the server's messages: replies to whoever is waiting,
