@@ -35,6 +35,11 @@ type HTTPReport struct {
 	// ExecutedMismatched is the hazard: the server ran the tool named in the
 	// body while the header named a different one.
 	ExecutedMismatched bool
+	// BodyTruncated is true when a response was larger than this probe reads.
+	// The verdicts that depend on parsing it are withheld rather than guessed,
+	// because a cut-off body parses as nothing and would otherwise be reported
+	// as the server having answered nonsense.
+	BodyTruncated bool
 
 	Notes []string
 }
@@ -64,7 +69,7 @@ func ProbeHTTP(ctx context.Context, timeout time.Duration, url, agreeing, mismat
 		},
 	}
 
-	status, body, err := callTool(ctx, client, url, agreeing, agreeing, headers)
+	status, body, truncated, err := callTool(ctx, client, url, agreeing, agreeing, headers)
 	if err != nil {
 		return nil, fmt.Errorf("calling %s: %w", agreeing, err)
 	}
@@ -81,6 +86,14 @@ func ProbeHTTP(ctx context.Context, timeout time.Duration, url, agreeing, mismat
 			rep.note(fmt.Sprintf("Refused the agreeing call in the body rather than the status line, JSON-RPC error %d under HTTP 200.", code))
 			break
 		}
+		if truncated {
+			// The call was served; only the shape is unknown, so the result
+			// markers are not judged either way.
+			rep.ServesModern = true
+			rep.BodyTruncated = true
+			rep.note(fmt.Sprintf("Served the agreeing call with a body larger than the %d bytes this probe reads, so the result shape was not judged.", maxBody))
+			break
+		}
 		if jsonPayload(body) == nil {
 			rep.RefusedModern = fmt.Sprintf("200 with a body that is not JSON-RPC: %s", firstLine(body))
 			rep.note("Answered the agreeing call 200 with a body that is not JSON-RPC, so nothing here describes an MCP server.")
@@ -91,7 +104,7 @@ func ProbeHTTP(ctx context.Context, timeout time.Duration, url, agreeing, mismat
 	}
 
 	// The header names one tool, the body names another.
-	status, body, err = callTool(ctx, client, url, mismatched, agreeing, headers)
+	status, body, mismatchTruncated, err := callTool(ctx, client, url, mismatched, agreeing, headers)
 	if err != nil {
 		return nil, fmt.Errorf("calling %s with a mismatched header: %w", agreeing, err)
 	}
@@ -114,6 +127,9 @@ func ProbeHTTP(ctx context.Context, timeout time.Duration, url, agreeing, mismat
 		// the revision specifies.
 		rep.note(fmt.Sprintf("Turned the mismatch away with JSON-RPC error %d (HTTP %d), not the %d the revision specifies.",
 			rep.MismatchCode, status, HeaderMismatchCode))
+	case mismatchTruncated:
+		rep.BodyTruncated = true
+		rep.note(fmt.Sprintf("Answered the mismatched call with a body larger than the %d bytes this probe reads, so whether the tool ran is unknown.", maxBody))
 	case status == http.StatusOK && jsonPayload(body) == nil:
 		// errorCode cannot tell a server that answered without an error from
 		// one whose body it could not read at all, and both arrive here as 0.
@@ -131,7 +147,11 @@ func ProbeHTTP(ctx context.Context, timeout time.Duration, url, agreeing, mismat
 	return rep, nil
 }
 
-func callTool(ctx context.Context, c *http.Client, url, headerName, bodyName string, extra map[string]string) (int, []byte, error) {
+// maxBody bounds a response read. It matches the stdio probe's scanner limit so
+// the two paths agree on what counts as too large to judge.
+const maxBody = 8 << 20
+
+func callTool(ctx context.Context, c *http.Client, url, headerName, bodyName string, extra map[string]string) (int, []byte, bool, error) {
 	payload := map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
 		"params": map[string]any{
@@ -141,11 +161,11 @@ func callTool(ctx context.Context, c *http.Client, url, headerName, bodyName str
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, false, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -158,11 +178,18 @@ func callTool(ctx context.Context, c *http.Client, url, headerName, bodyName str
 
 	resp, err := c.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, false, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	return resp.StatusCode, body, err
+	// One byte past the cap, so a body that reached it can be told from one that
+	// merely ended there. A truncated read parses as nothing, and reporting that
+	// as a malformed answer would blame the server for this probe's limit.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
+	truncated := len(body) > maxBody
+	if truncated {
+		body = body[:maxBody]
+	}
+	return resp.StatusCode, body, truncated, err
 }
 
 // jsonPayload pulls the JSON object out of a response, whether it arrived as a

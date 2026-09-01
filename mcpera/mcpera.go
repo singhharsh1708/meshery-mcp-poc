@@ -67,6 +67,10 @@ type Report struct {
 	AnswersDiscover bool
 	// DiscoverError is what server/discover returned when it did not succeed.
 	DiscoverError string
+	// DiscoverAnswered is true when the server replied to server/discover at
+	// all, even to refuse it. A refusal is a fact about the method; silence is
+	// only a fact about the process, and the two cannot be reported alike.
+	DiscoverAnswered bool
 	// ServesModernCall is true when a modern tools/call ran without an error.
 	ServesModernCall bool
 	// ModernResultIsModern is true when that result carried the markers a
@@ -106,7 +110,7 @@ func modernMeta() map[string]any {
 func Probe(ctx context.Context, timeout time.Duration, name string, args ...string) (*Report, error) {
 	rep := &Report{Era: Unknown}
 
-	init, err := exchange(ctx, timeout, name, args, map[string]any{
+	init, _, err := exchange(ctx, timeout, name, args, map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "initialize",
 		"params": map[string]any{
 			"protocolVersion": "2025-11-25",
@@ -127,7 +131,7 @@ func Probe(ctx context.Context, timeout time.Duration, name string, args ...stri
 		}
 	}
 
-	disc, err := exchange(ctx, timeout, name, args, map[string]any{
+	disc, discSilence, err := exchange(ctx, timeout, name, args, map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "server/discover",
 		"params": map[string]any{"_meta": modernMeta()},
 	})
@@ -136,9 +140,14 @@ func Probe(ctx context.Context, timeout time.Duration, name string, args ...stri
 	}
 	switch {
 	case disc == nil:
-		rep.DiscoverError = "no response"
+		// Not "it refused". The server said nothing, and why it said nothing is
+		// the difference between a finding about the method and one about the
+		// server being up at all.
+		rep.DiscoverError = string(discSilence)
+		rep.DiscoverAnswered = false
 	case disc.Error != nil:
 		rep.DiscoverError = fmt.Sprintf("%d: %s", disc.Error.Code, disc.Error.Message)
+		rep.DiscoverAnswered = true
 	case !describesAServer(disc.Result):
 		// A reply with no error but nothing in it is not an answer to
 		// server/discover. Counting it as one is how a server that merely
@@ -146,11 +155,12 @@ func Probe(ctx context.Context, timeout time.Duration, name string, args ...stri
 		// client would trust most. The modern tools/list check below already
 		// requires a result; this is the same bar.
 		rep.DiscoverError = "answered without describing a server"
+		rep.DiscoverAnswered = true
 	default:
 		rep.AnswersDiscover = true
 	}
 
-	call, err := exchange(ctx, timeout, name, args, map[string]any{
+	call, _, err := exchange(ctx, timeout, name, args, map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/list",
 		"params": map[string]any{"_meta": modernMeta()},
 	})
@@ -225,9 +235,17 @@ func (r *Report) classify() {
 			" and answered in the legacy shape, with no error and no version acknowledgement. " +
 			"A client reading only content cannot tell it was downgraded.")
 	}
-	if !r.AnswersDiscover && r.DiscoverError != "" {
+	switch {
+	case r.AnswersDiscover || r.DiscoverError == "":
+	case r.DiscoverAnswered:
 		r.note("server/discover fails deterministically (" + r.DiscoverError +
 			"), which is the probe the spec tells stdio clients to send first.")
+	default:
+		// Nothing came back, so nothing was learned about the method. Calling
+		// that a deterministic failure would credit the server with a refusal
+		// it never made.
+		r.note("server/discover got no answer (" + r.DiscoverError +
+			"), so this says nothing about whether the method is implemented.")
 	}
 }
 
@@ -235,21 +253,31 @@ func (r *Report) note(s string) { r.Notes = append(r.Notes, s) }
 
 // exchange runs one request against a fresh server process and returns the
 // first response, or nil when the server stayed silent.
-func exchange(ctx context.Context, timeout time.Duration, name string, args []string, req map[string]any) (*rpcResponse, error) {
+// silence explains why a probe got nothing back. The three cases look alike to
+// a caller and mean different things: a server that refused is a finding about
+// the method, and a server that hung or died is a finding about the server.
+type silence string
+
+const (
+	silentTimeout silence = "the server did not answer within the timeout"
+	silentEOF     silence = "the server ended its output without answering"
+)
+
+func exchange(ctx context.Context, timeout time.Duration, name string, args []string, req map[string]any) (*rpcResponse, silence, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, name, args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer func() {
 		_ = stdin.Close()
@@ -259,10 +287,11 @@ func exchange(ctx context.Context, timeout time.Duration, name string, args []st
 
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if _, err := stdin.Write(append(body, '\n')); err != nil {
-		return nil, nil
+		// The pipe closed under us, which means the process is already gone.
+		return nil, silentEOF, nil
 	}
 
 	type result struct {
@@ -294,10 +323,15 @@ func exchange(ctx context.Context, timeout time.Duration, name string, args []st
 	select {
 	case r := <-done:
 		if r.err != nil && !errors.Is(r.err, context.DeadlineExceeded) {
-			return nil, r.err
+			return nil, "", r.err
 		}
-		return r.resp, nil
+		if r.resp == nil {
+			// The scanner reached the end of the server's output without a
+			// reply, so the process answered nothing and then stopped.
+			return nil, silentEOF, nil
+		}
+		return r.resp, "", nil
 	case <-ctx.Done():
-		return nil, nil // silence is a finding, not an error
+		return nil, silentTimeout, nil // silence is a finding, not an error
 	}
 }

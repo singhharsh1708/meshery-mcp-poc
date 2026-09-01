@@ -159,3 +159,32 @@ func TestExecutedMismatchStillReported(t *testing.T) {
 		t.Error("a server that ran the body while the header disagreed must still be reported")
 	}
 }
+
+// TestOversizedBodyIsNotBlamedOnTheServer covers this probe's own limit. A
+// response larger than it reads arrives cut in half, parses as nothing, and
+// would otherwise be reported as a server that answered something other than
+// JSON-RPC. The call was served; only the shape is unknown.
+func TestOversizedBodyIsNotBlamedOnTheServer(t *testing.T) {
+	// One valid JSON-RPC result, padded past the read limit.
+	huge := `{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","pad":"` +
+		strings.Repeat("x", 9<<20) + `"}}`
+	rep := probeHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, huge)
+	})
+	if !rep.BodyTruncated {
+		t.Error("a body past the read limit should be reported as truncated")
+	}
+	if !rep.ServesModern {
+		t.Error("the call was served, the size of the answer does not change that")
+	}
+	if rep.RefusedModern != "" {
+		t.Errorf("a large answer is not a refusal, got %q", rep.RefusedModern)
+	}
+	if rep.ExecutedMismatched {
+		t.Error("whether the tool ran is unknown when the body could not be read")
+	}
+	if !strings.Contains(strings.Join(rep.Notes, " "), "larger than") {
+		t.Errorf("the notes should name the limit: %v", rep.Notes)
+	}
+}

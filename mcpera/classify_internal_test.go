@@ -1,6 +1,9 @@
 package mcpera
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestClassifyReadsBothModernSignalsIndependently is the disagreeing fixture for
 // the era verdict.
@@ -98,5 +101,47 @@ func TestDiscoverNeedsAResultThatDescribesSomething(t *testing.T) {
 				t.Errorf("describesAServer(%s) = %v, want %v", tc.result, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestSilenceIsNotADeterministicFailure separates the two ways server/discover
+// can fail to succeed. A server that replies with an error has told a client
+// something it can code against. A server that hung or died has told it nothing,
+// and crediting that with a deterministic refusal reports a fact about the
+// method on the strength of a fact about the process.
+func TestSilenceIsNotADeterministicFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		answered   bool
+		errText    string
+		wantInNote string
+	}{
+		{"refused with an error", true, "-32601: method not found", "fails deterministically"},
+		{"answered but described nothing", true, "answered without describing a server", "fails deterministically"},
+		{"hung", false, string(silentTimeout), "says nothing about whether the method is implemented"},
+		{"died", false, string(silentEOF), "says nothing about whether the method is implemented"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Report{DiscoverError: tc.errText, DiscoverAnswered: tc.answered}
+			r.classify()
+			joined := strings.Join(r.Notes, " ")
+			if !strings.Contains(joined, tc.wantInNote) {
+				t.Errorf("notes = %v, want one containing %q", r.Notes, tc.wantInNote)
+			}
+			if !tc.answered && strings.Contains(joined, "fails deterministically") {
+				t.Errorf("silence was reported as a deterministic failure: %v", r.Notes)
+			}
+		})
+	}
+}
+
+// TestDiscoverSuccessAddsNoFailureNote is the control: a server that answered
+// gets neither note.
+func TestDiscoverSuccessAddsNoFailureNote(t *testing.T) {
+	r := &Report{AnswersDiscover: true, AnswersInitialize: true}
+	r.classify()
+	joined := strings.Join(r.Notes, " ")
+	if strings.Contains(joined, "deterministically") || strings.Contains(joined, "no answer") {
+		t.Errorf("a working server should carry no discover failure note: %v", r.Notes)
 	}
 }
