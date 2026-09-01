@@ -2,6 +2,7 @@ package meshery
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -206,5 +207,53 @@ func TestEmptyClusterTopologyIsNotAnError(t *testing.T) {
 	}
 	if len(topo.Components) != 0 {
 		t.Errorf("components = %d, want 0", len(topo.Components))
+	}
+}
+
+// TestSecretPayloadNeverSurvivesTheClient is the guarantee stated in the README,
+// tested against what MeshSync actually sends rather than what this client asks
+// for. A Secret row carries its data and stringData on a plain read: those are
+// columns on the resource itself, not part of the spec or status a caller can
+// decline to request. Measured against a live server, asking for neither still
+// returns both.
+//
+// So not requesting spec and status is not what protects this path. Dropping
+// Secret rows by kind is, and the row shape this client decodes carries no
+// payload fields to begin with.
+func TestSecretPayloadNeverSurvivesTheClient(t *testing.T) {
+	const body = `{"page":0,"pageSize":25,"totalCount":2,"resources":[
+		{"kind":"Pod","apiVersion":"v1","metadata":{"name":"web","namespace":"prod"}},
+		{"kind":"Secret","apiVersion":"v1","type":"Opaque",
+		 "data":{"password":"c3VwZXItc2VjcmV0LXZhbHVl"},
+		 "stringData":{"password":"super-secret-value"},
+		 "metadata":{"name":"db-credentials","namespace":"prod"}}]}`
+
+	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The client must not be asking for these, but the payload arrives with
+		// or without them, which is the point of the fixture.
+		for _, k := range []string{"spec", "status", "labels", "annotations"} {
+			if r.URL.Query().Get(k) != "" {
+				t.Errorf("client requested %s, which widens what MeshSync serializes", k)
+			}
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	out, err := c.ListWorkloads(context.Background(), "c1", "prod", 0, AllPages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leak := range []string{"super-secret-value", "c3VwZXItc2VjcmV0LXZhbHVl", "db-credentials", "stringData"} {
+		if strings.Contains(string(rendered), leak) {
+			t.Errorf("%q survived into the client's output: %s", leak, rendered)
+		}
+	}
+	if out.ExcludedSecrets != 1 {
+		t.Errorf("ExcludedSecrets = %d, want 1", out.ExcludedSecrets)
 	}
 }

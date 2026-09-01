@@ -154,9 +154,12 @@ client method on the assumption it can move.
 
 Four separate things, because one of them was not enough.
 
-`spec`, `status`, `labels` and `annotations` are never requested, so Secret
-payloads are not serialized server-side to begin with. Secret objects are then
-filtered out of every path that returns resources or components, and that
+`spec`, `status`, `labels` and `annotations` are never requested, which keeps
+the object spec and last-applied-config off the wire. Secret payloads are a
+separate matter: `data` and `stringData` are columns on the resource row and
+come back whether or not those parameters are sent, measured against a live
+server. Secret objects are therefore filtered out of every path that returns
+resources or components, and that
 includes both topology graphs, which is where an earlier version leaked them: the
 flat list filtered correctly while the graph did not. The topology resources
 report `excludedSecrets` so a filtered graph is distinguishable from one that

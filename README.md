@@ -88,7 +88,7 @@ Prompts (guided read-only workflows):
 - **`review_design`**: structured design review weighted toward a chosen concern
 - **`compare_designs`**: diff two designs' component graphs
 
-No mutating endpoints are registered. `spec`/`status`/`labels`/`annotations` are never requested from MeshSync, so Secret data and last-applied-config never reach the model, and Secrets are filtered out of every path that returns resources or components. The topology resources report an `excludedSecrets` count so a filtered graph is distinguishable from one that never contained any.
+No mutating endpoints are registered. `spec`/`status`/`labels`/`annotations` are never requested from MeshSync, which keeps last-applied-config and the object spec off the wire. That alone does not cover Secrets: `data` and `stringData` are columns on the resource row itself and arrive whether or not those parameters are sent, measured against a live server. What keeps them from the model is that Secrets are dropped by kind on every path that returns resources or components, and the row shape decoded here carries no payload fields at all. The topology resources report an `excludedSecrets` count so a filtered graph is distinguishable from one that never contained any.
 
 ## Build
 
