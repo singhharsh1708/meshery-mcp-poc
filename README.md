@@ -159,7 +159,7 @@ npx @modelcontextprotocol/inspector ./meshery-mcp-poc
 go test ./... -race
 ```
 
-129 tests (168 including subtests) in the hermetic suite, plus 5 integration tests behind the `integration` build tag. Coverage: 78.2% on the server package, 83.5% on the Meshery client, 91.8% on `mesherytest`, 86.2% on `mcpera`, 87.5% on `dualera`. The hermetic suite runs in about 9 seconds. Every guarantee below has a test that fails if it stops holding, verified red-green rather than assumed:
+136 tests (184 including subtests) in the hermetic suite, plus 5 integration tests behind the `integration` build tag. Coverage: 78.2% on the server package, 83.5% on the Meshery client, 92.6% on `mesherytest`, 86.3% on `mcpera`, 86.9% on `dualera`. The hermetic suite runs in about 12 seconds. Every guarantee below has a test that fails if it stops holding, verified red-green rather than assumed:
 
 | Guarantee | What breaks without it |
 |---|---|
