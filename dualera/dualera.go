@@ -55,6 +55,12 @@ const internalIDBase = 1 << 52
 // maxInflight bounds concurrent upstream calls.
 const maxInflight = 64
 
+// maxAbandoned bounds the set of ids whose late replies are still being
+// watched for. A reply that has not arrived by the time this many further calls
+// have been abandoned is not going to be recognised anyway, so the oldest entry
+// is dropped rather than kept forever.
+const maxAbandoned = 1024
+
 type message struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,omitempty"`
@@ -80,7 +86,12 @@ type Bridge struct {
 	mu        sync.Mutex
 	pending   map[string]chan *message
 	abandoned map[string]struct{}
-	nextID    int64
+	// abandonedFIFO holds the abandoned ids in the order they were recorded, so
+	// the oldest can be dropped once the set is full. An entry is only removed
+	// on its own when the late reply it is waiting for arrives, and a reply that
+	// never comes would otherwise keep its id for the life of the process.
+	abandonedFIFO []string
+	nextID        int64
 	// dead records that the wrapped server's stream ended, so a later call can
 	// fail at once rather than waiting on a reply nothing will send.
 	dead       bool
@@ -419,7 +430,7 @@ func (b *Bridge) call(ctx context.Context, method string, params json.RawMessage
 		delete(b.pending, key)
 		// Remember it, so a late reply is dropped rather than forwarded to a
 		// client that never issued this id.
-		b.abandoned[key] = struct{}{}
+		b.rememberAbandoned(key)
 		b.mu.Unlock()
 		return nil, ctx.Err()
 	}
@@ -490,6 +501,20 @@ func (b *Bridge) writeServer(line []byte) {
 // one falls in the bridge's reserved numeric range. A client is free to choose
 // any JSON-RPC id, a nanosecond timestamp among them, and a range test would
 // swallow the reply to any client id that happened to land above the base.
+// rememberAbandoned records an id and evicts the oldest once the set is full.
+// The caller holds b.mu.
+func (b *Bridge) rememberAbandoned(key string) {
+	if _, dup := b.abandoned[key]; dup {
+		return
+	}
+	b.abandoned[key] = struct{}{}
+	b.abandonedFIFO = append(b.abandonedFIFO, key)
+	for len(b.abandonedFIFO) > maxAbandoned {
+		delete(b.abandoned, b.abandonedFIFO[0])
+		b.abandonedFIFO = b.abandonedFIFO[1:]
+	}
+}
+
 func (b *Bridge) wasAbandoned(id json.RawMessage) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -498,5 +523,11 @@ func (b *Bridge) wasAbandoned(id json.RawMessage) bool {
 		return false
 	}
 	delete(b.abandoned, key)
+	for i, k := range b.abandonedFIFO {
+		if k == key {
+			b.abandonedFIFO = append(b.abandonedFIFO[:i], b.abandonedFIFO[i+1:]...)
+			break
+		}
+	}
 	return true
 }

@@ -132,3 +132,62 @@ func TestDeadServerDoesNotExhaustTheInflightSlots(t *testing.T) {
 		t.Error("the request after the burst was never answered")
 	}
 }
+
+// TestAbandonedSetIsBounded covers the slow leak. An abandoned id is only
+// forgotten when the late reply it watches for arrives, so a wrapped server
+// that never answers leaves one entry per abandoned call for the life of the
+// process. The set is capped and the oldest entry gives way.
+func TestAbandonedSetIsBounded(t *testing.T) {
+	serverIn, bridgeToServer := io.Pipe()
+	bridgeFromServer, serverOut := io.Pipe()
+	clientIn, bridgeToClient := io.Pipe()
+
+	// A server that reads everything and answers nothing, so every call the
+	// bridge makes on its behalf is eventually abandoned.
+	go func() { _, _ = io.Copy(io.Discard, serverIn) }()
+	go func() { _, _ = io.Copy(io.Discard, clientIn) }()
+	defer func() {
+		_ = bridgeToServer.Close()
+		_ = serverOut.Close()
+		_ = bridgeToClient.Close()
+	}()
+
+	b := dualera.New(bridgeToServer, bridgeFromServer, bridgeToClient)
+	// A context that is already done, so each call abandons as soon as it has
+	// registered rather than waiting on a server that will never answer.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	clientR, clientW := io.Pipe()
+	done := make(chan struct{})
+	go func() { defer close(done); _ = b.Run(ctx, clientR) }()
+
+	// Well past the cap, because a burst also loses some calls to the inflight
+	// bound and those never reach the abandonment path at all.
+	const calls = dualera.MaxAbandonedForTest * 4
+	for i := 0; i < calls; i++ {
+		if _, err := clientW.Write([]byte(`{"jsonrpc":"2.0","id":` + strconv.Itoa(i) +
+			`,"method":"tools/call","params":{"name":"x","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}` + "\n")); err != nil {
+			break
+		}
+	}
+	_ = clientW.Close()
+	<-done
+
+	// Let the in-flight handlers finish abandoning.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if n := b.AbandonedLenForTest(); n > dualera.MaxAbandonedForTest {
+			t.Fatalf("abandoned set grew to %d, past the %d cap", n, dualera.MaxAbandonedForTest)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	n := b.AbandonedLenForTest()
+	t.Logf("abandoned set settled at %d after %d calls", n, calls)
+	if n <= dualera.MaxAbandonedForTest/2 {
+		t.Fatalf("only %d calls were abandoned, too few to exercise the cap of %d", n, dualera.MaxAbandonedForTest)
+	}
+	if n > dualera.MaxAbandonedForTest {
+		t.Errorf("abandoned set = %d, want at most %d", n, dualera.MaxAbandonedForTest)
+	}
+}
