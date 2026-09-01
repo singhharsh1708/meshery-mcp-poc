@@ -24,7 +24,7 @@ Templated resources (RFC 6570), with `resources/subscribe` supported:
 ./demo/run.sh
 ```
 
-Builds the server, starts a mock Meshery serving the real endpoint shapes, and drives the binary through a full MCP session over stdio: handshake, tools, resources, subscriptions and prompts. It paces itself to stay readable, about a minute; `DEMO_PACE=0 ./demo/run.sh` runs it flat out. Every line of [the transcript](docs/DEMO.md) is a genuine JSON-RPC exchange with the process.
+Builds the server, starts a mock Meshery serving the real endpoint shapes, and drives the binary through a full MCP session over stdio: handshake, tools, resources, subscriptions and prompts. It paces itself to stay readable, about 25 seconds; `DEMO_PACE=0 ./demo/run.sh` runs it flat out. Every line of [the transcript](docs/DEMO.md) is a genuine JSON-RPC exchange with the process.
 
 A cluster topology read, straight from that run:
 

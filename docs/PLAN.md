@@ -146,7 +146,7 @@ permissive. Three rules:
    `clusterIds`, `namespace` or `orgId` must fail the build.
 2. Prove each guard red-green: remove the guard, watch the test fail, restore it.
 3. Drive the real binary over a real transport at least once, so protocol
-   regressions surface. `demo/run.sh` in this repo does that in about a minute, or a few seconds with `DEMO_PACE=0`.
+   regressions surface. `demo/run.sh` in this repo does that in about 25 seconds, or a few seconds with `DEMO_PACE=0`.
 
 ## 7. Risks
 
