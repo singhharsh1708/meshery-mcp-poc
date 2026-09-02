@@ -173,12 +173,21 @@ func encodeHeaderValue(v string) string {
 }
 
 // headerSafe reports whether a value can travel as a plain header value.
+//
+// A value already shaped like the sentinel is not safe even when it is plain
+// ASCII. The revision requires encoding those too, because a server decodes
+// anything wearing the markers before comparing it to the body, so a tool
+// genuinely named "=?base64?literal?=" would be decoded into something else and
+// the agreeing call would be rejected as a mismatch this probe caused.
 func headerSafe(v string) bool {
 	if v == "" {
 		return true
 	}
 	if strings.TrimSpace(v) != v {
 		// Leading or trailing whitespace does not survive the wire intact.
+		return false
+	}
+	if strings.HasPrefix(v, "=?base64?") && strings.HasSuffix(v, "?=") {
 		return false
 	}
 	for _, r := range v {

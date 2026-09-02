@@ -261,3 +261,36 @@ func TestHeaderMismatchNeedsTheStatusToo(t *testing.T) {
 		t.Errorf("the note should name the missing status: %v", rep.Notes)
 	}
 }
+
+// TestHeaderEncodingMatchesTheSpecExamples checks the encoder against the
+// normative table in the transport spec rather than against my reading of it.
+// The last row is the one that is easy to miss: a plain-ASCII value already
+// wearing the sentinel markers has to be encoded too, or a server decodes it
+// into something the body never said.
+func TestHeaderEncodingMatchesTheSpecExamples(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"us-west1", "us-west1"},
+		{"Hello, 世界", "=?base64?SGVsbG8sIOS4lueVjA==?="},
+		{" padded ", "=?base64?IHBhZGRlZCA=?="},
+		{"line1\nline2", "=?base64?bGluZTEKbGluZTI=?="},
+		{"=?base64?literal?=", "=?base64?PT9iYXNlNjQ/bGl0ZXJhbD89?="},
+	} {
+		t.Run(tc.in, func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got == "" {
+					got = r.Header.Get("Mcp-Name")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`))
+			}))
+			defer srv.Close()
+			if _, err := mcpera.ProbeHTTP(context.Background(), 3*time.Second, srv.URL, tc.in, "other", nil); err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("Mcp-Name = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
