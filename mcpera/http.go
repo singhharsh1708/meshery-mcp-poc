@@ -3,6 +3,7 @@ package mcpera
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -117,10 +118,17 @@ func ProbeHTTP(ctx context.Context, timeout time.Duration, url, agreeing, mismat
 		// judged the header and no verdict about it is available.
 		rep.note(fmt.Sprintf("Refused the agreeing call too (%s), so this says nothing about header validation; the endpoint did not serve either request.",
 			rep.RefusedModern))
-	case rep.MismatchCode == HeaderMismatchCode:
+	case rep.MismatchCode == HeaderMismatchCode && status == http.StatusBadRequest:
 		rep.ValidatesHeaderBody = true
 		rep.note(fmt.Sprintf("Rejects a header that disagrees with the body, %d with %d, as revision %s requires.",
 			status, HeaderMismatchCode, Version))
+	case rep.MismatchCode == HeaderMismatchCode:
+		// The server caught it, so an intermediary and this server agree about
+		// what ran. The revision requires both the status and the code from a
+		// server, though, and a client keying on the status alone would read
+		// this as a success.
+		rep.note(fmt.Sprintf("Caught the mismatch with %d, but under HTTP %d rather than the 400 revision %s requires alongside it.",
+			HeaderMismatchCode, status, Version))
 	case rep.MismatchCode != 0:
 		// JSON-RPC carries its errors in the body, so an error here is a
 		// rejection whatever the status line says. It is simply not the code
@@ -147,6 +155,43 @@ func ProbeHTTP(ctx context.Context, timeout time.Duration, url, agreeing, mismat
 	return rep, nil
 }
 
+// encodeHeaderValue renders a value for Mcp-Name or Mcp-Param-{Name}.
+//
+// RFC 9110 limits header field values to visible ASCII, space and horizontal
+// tab, and revision 2026-07-28 says a client MUST carry anything outside that
+// set, or with surrounding whitespace, in a Base64 sentinel. A probe that
+// tests conformance has to be conformant itself, or it measures a server
+// against a request the spec does not permit.
+//
+// The markers are lowercase and exact, since servers match on them literally
+// before comparing the decoded value to the body.
+func encodeHeaderValue(v string) string {
+	if headerSafe(v) {
+		return v
+	}
+	return "=?base64?" + base64.StdEncoding.EncodeToString([]byte(v)) + "?="
+}
+
+// headerSafe reports whether a value can travel as a plain header value.
+func headerSafe(v string) bool {
+	if v == "" {
+		return true
+	}
+	if strings.TrimSpace(v) != v {
+		// Leading or trailing whitespace does not survive the wire intact.
+		return false
+	}
+	for _, r := range v {
+		if r == ' ' || r == '\t' {
+			continue
+		}
+		if r < 0x21 || r > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
 // maxBody bounds a response read. It matches the stdio probe's scanner limit so
 // the two paths agree on what counts as too large to judge.
 const maxBody = 8 << 20
@@ -171,7 +216,7 @@ func callTool(ctx context.Context, c *http.Client, url, headerName, bodyName str
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("MCP-Protocol-Version", Version)
 	req.Header.Set("Mcp-Method", "tools/call")
-	req.Header.Set("Mcp-Name", headerName)
+	req.Header.Set("Mcp-Name", encodeHeaderValue(headerName))
 	for k, v := range extra {
 		req.Header.Set(k, v)
 	}

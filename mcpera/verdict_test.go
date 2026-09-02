@@ -2,6 +2,7 @@ package mcpera_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -186,5 +187,77 @@ func TestOversizedBodyIsNotBlamedOnTheServer(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(rep.Notes, " "), "larger than") {
 		t.Errorf("the notes should name the limit: %v", rep.Notes)
+	}
+}
+
+// TestMcpNameIsEncodedWhenItHasTo covers this probe's own conformance. Revision
+// 2026-07-28 says a client MUST carry a header value outside the safe ASCII set
+// in a Base64 sentinel, so a probe that sent it raw would be measuring servers
+// against a request the spec does not permit.
+func TestMcpNameIsEncodedWhenItHasTo(t *testing.T) {
+	for _, tc := range []struct {
+		name, tool, want string
+	}{
+		{"plain name travels as-is", "get_weather", "get_weather"},
+		{"non-ascii is encoded", "café", "=?base64?" + base64.StdEncoding.EncodeToString([]byte("café")) + "?="},
+		{"trailing space is encoded", "tool ", "=?base64?" + base64.StdEncoding.EncodeToString([]byte("tool ")) + "?="},
+		{"newline is encoded", "a\nb", "=?base64?" + base64.StdEncoding.EncodeToString([]byte("a\nb")) + "?="},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got == "" {
+					got = r.Header.Get("Mcp-Name")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`))
+			}))
+			defer srv.Close()
+			if _, err := mcpera.ProbeHTTP(context.Background(), 3*time.Second, srv.URL, tc.tool, "other", nil); err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("Mcp-Name = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHeaderMismatchNeedsTheStatusToo separates full conformance from a server
+// that caught the mismatch but answered with the wrong status. The revision
+// requires 400 and -32020 together, and a client keying on the status alone
+// would read a 200 carrying -32020 as a success.
+func TestHeaderMismatchNeedsTheStatusToo(t *testing.T) {
+	reject := func(code int) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			var req struct {
+				Params struct {
+					Name string `json:"name"`
+				} `json:"params"`
+			}
+			_ = json.Unmarshal(body, &req)
+			w.Header().Set("Content-Type", "application/json")
+			if r.Header.Get("Mcp-Name") != req.Params.Name {
+				w.WriteHeader(code)
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32020,"message":"header mismatch"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`))
+		}
+	}
+
+	if rep := probeHandler(t, reject(http.StatusBadRequest)); !rep.ValidatesHeaderBody {
+		t.Errorf("400 with -32020 is what the revision asks for: %v", rep.Notes)
+	}
+	rep := probeHandler(t, reject(http.StatusOK))
+	if rep.ValidatesHeaderBody {
+		t.Error("-32020 under a 200 is not the rejection the revision specifies")
+	}
+	if rep.ExecutedMismatched {
+		t.Error("the server did catch it, so nothing executed")
+	}
+	if !strings.Contains(strings.Join(rep.Notes, " "), "rather than the 400") {
+		t.Errorf("the note should name the missing status: %v", rep.Notes)
 	}
 }
