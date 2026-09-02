@@ -78,19 +78,38 @@ func TestSilentDowngradeNeedsBothHalves(t *testing.T) {
 	}
 }
 
-// TestDiscoverNeedsAResultThatDescribesSomething covers the gap between
-// answering a method and implementing it. A server that returns an empty
-// success to server/discover has told a client nothing about itself, and
-// counting that as an answer puts it in the dual-era row, the one a client
-// would trust most.
-func TestDiscoverNeedsAResultThatDescribesSomething(t *testing.T) {
+// TestDiscoverNeedsARealDiscoverResult covers the gap between answering a
+// method and implementing it.
+//
+// DiscoverResult is what the revision replaced the initialize handshake with,
+// and schema/2026-07-28/schema.json marks supportedVersions, capabilities,
+// resultType, cacheScope and ttlMs required. A server returning anything less
+// has not told a client what to negotiate, and counting it puts that server in
+// the dual-era row, the one a client trusts most.
+func TestDiscoverNeedsARealDiscoverResult(t *testing.T) {
+	const full = `{"supportedVersions":["2026-07-28"],"capabilities":{},` +
+		`"resultType":"complete","cacheScope":"private","ttlMs":60000}`
+
 	for _, tc := range []struct {
 		name   string
 		result string
 		want   bool
 	}{
-		{"a real discover answer", `{"serverInfo":{"name":"s"},"capabilities":{}}`, true},
-		{"one field is enough", `{"protocolVersions":["2026-07-28"]}`, true},
+		{"a real discover answer", full, true},
+		// Every required field present, but the server does not list the version
+		// the probe declared, so there is nothing agreed to speak.
+		{"supports another version only", `{"supportedVersions":["2025-11-25"],"capabilities":{},` +
+			`"resultType":"complete","cacheScope":"private","ttlMs":60000}`, false},
+		{"no supportedVersions", `{"capabilities":{},"resultType":"complete",` +
+			`"cacheScope":"private","ttlMs":60000}`, false},
+		{"no capabilities", `{"supportedVersions":["2026-07-28"],"resultType":"complete",` +
+			`"cacheScope":"private","ttlMs":60000}`, false},
+		{"no ttlMs", `{"supportedVersions":["2026-07-28"],"capabilities":{},` +
+			`"resultType":"complete","cacheScope":"private"}`, false},
+		// ttlMs of zero is a legitimate hint, so its presence is what counts
+		// rather than its value.
+		{"ttlMs of zero still counts", `{"supportedVersions":["2026-07-28"],"capabilities":{},` +
+			`"resultType":"complete","cacheScope":"private","ttlMs":0}`, true},
 		{"empty object", `{}`, false},
 		{"null", `null`, false},
 		{"absent", ``, false},

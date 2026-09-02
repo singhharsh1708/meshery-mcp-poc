@@ -194,21 +194,42 @@ func isModernResult(raw json.RawMessage) bool {
 	return ok
 }
 
-// describesAServer reports whether a server/discover result carries anything.
+// describesAServer reports whether a server/discover result is one.
 //
-// The revision has the method return what a client would otherwise have learned
-// from initialize, so an answer names the server, its capabilities or the
-// versions it speaks. An absent result, a null, or an empty object answers none
-// of that, and a probe cannot call a server dual-era on the strength of it.
+// The revision replaces the initialize handshake with this method, so the
+// answer is what a client negotiates from: DiscoverResult requires
+// supportedVersions, capabilities, resultType, cacheScope and ttlMs
+// (schema/2026-07-28/schema.json). Accepting any non-empty object instead would
+// let a server that merely tolerates the method be published as dual-era, which
+// is the row a client trusts most.
+//
+// supportedVersions is checked for this revision specifically. A server that
+// answers the probe but does not list the version the probe declared has not
+// agreed to speak it, and the list is what the spec tells a client to choose
+// from.
 func describesAServer(result json.RawMessage) bool {
 	if len(result) == 0 {
 		return false
 	}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(result, &fields) != nil {
+	var r struct {
+		SupportedVersions []string         `json:"supportedVersions"`
+		Capabilities      *json.RawMessage `json:"capabilities"`
+		ResultType        *string          `json:"resultType"`
+		CacheScope        *string          `json:"cacheScope"`
+		TTLMs             *int64           `json:"ttlMs"`
+	}
+	if json.Unmarshal(result, &r) != nil {
 		return false
 	}
-	return len(fields) > 0
+	if r.Capabilities == nil || r.ResultType == nil || r.CacheScope == nil || r.TTLMs == nil {
+		return false
+	}
+	for _, v := range r.SupportedVersions {
+		if v == Version {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Report) classify() {
