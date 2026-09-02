@@ -65,6 +65,34 @@ func (s *subscriptions) uris() []string {
 	return out
 }
 
+// servableURI reports whether a URI matches one of the templates this server
+// serves, with every variable filled in.
+//
+// Read and subscribe have to agree on this. A subscription the server will
+// never read is worse than a refusal: the client is told it is watching
+// something, and cannot tell silence from a resource that never existed.
+func servableURI(uri string) bool {
+	for _, p := range []*uritemplate.Template{
+		clusterTopologyPattern, clusterSummaryPattern, workloadsPattern, designTopologyPattern,
+	} {
+		vals := p.Match(uri)
+		if vals == nil {
+			continue
+		}
+		filled := true
+		for _, name := range p.Varnames() {
+			if vals.Get(name).String() == "" {
+				filled = false
+				break
+			}
+		}
+		if filled {
+			return true
+		}
+	}
+	return false
+}
+
 func jsonResource(uri string, v any) (*mcp.ReadResourceResult, error) {
 	body, err := json.Marshal(v)
 	if err != nil {
@@ -143,7 +171,10 @@ func addTopologyResources(s *mcp.Server, c *meshery.Client) {
 			// Either empty would drop its filter and silently widen the read.
 			return nil, mcp.ResourceNotFoundError(req.Params.URI)
 		}
-		r, err := c.ListWorkloads(ctx, clusterID, namespace, 0, 0)
+		// A resource URI carries no page variable, so one default page would
+		// present the first 25 rows as the whole namespace with nothing saying
+		// otherwise. Ask for every row instead.
+		r, err := c.ListWorkloads(ctx, clusterID, namespace, 0, meshery.AllPages)
 		if err != nil {
 			return nil, err
 		}

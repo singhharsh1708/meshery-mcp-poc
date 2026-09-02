@@ -1,6 +1,7 @@
 package meshery
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,22 @@ type Client struct {
 	token    string
 	provider string
 	http     *http.Client
+
+	// unconfigured carries the reason this client cannot reach Meshery, when
+	// it cannot. Every request returns it rather than attempting a call that
+	// would fail less informatively.
+	unconfigured error
+}
+
+// Unconfigured returns a Client that reports why it cannot reach Meshery
+// instead of trying. It lets the server start and hand the reason to the model
+// on the first call, rather than exiting before a client can complete a
+// handshake and see anything at all.
+func Unconfigured(reason error) *Client {
+	if reason == nil {
+		reason = errors.New("meshery client is not configured")
+	}
+	return &Client{unconfigured: reason, http: &http.Client{Timeout: 15 * time.Second}}
 }
 
 // NewFromEnv reads MESHERY_URL (default http://localhost:9081) and
@@ -56,11 +73,23 @@ func New(baseURL, token, provider string) *Client {
 		baseURL:  baseURL,
 		token:    token,
 		provider: provider,
-		http:     &http.Client{Timeout: 15 * time.Second},
+		http: &http.Client{
+			Timeout: 15 * time.Second,
+			// Meshery answers an unauthenticated or provider-less request with a
+			// 302 to a sign-in page that serves HTML under a 200. Following it
+			// turns an auth failure into a body that parses as neither an object
+			// nor an error, so the caller is told the response shape changed.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
 func (c *Client) get(ctx context.Context, path string, q url.Values, out any) error {
+	if c.unconfigured != nil {
+		return fmt.Errorf("meshery is not configured: %w", c.unconfigured)
+	}
 	u := c.baseURL + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
@@ -76,6 +105,11 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 		return err
 	}
 	defer resp.Body.Close()
+	if loc := resp.Header.Get("Location"); resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		// The redirect target is the provider gate or the sign-in page. Naming
+		// it separates an expired session from a Meshery that changed shape.
+		return fmt.Errorf("meshery GET %s -> %s redirecting to %s; the session cookies are not accepted, so re-authenticate and select a provider", path, resp.Status, loc)
+	}
 	if resp.StatusCode != http.StatusOK {
 		// Include Meshery's own message. Without it the model receives a bare
 		// status line and cannot tell a missing filter from an expired session.
@@ -86,7 +120,54 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 		}
 		return fmt.Errorf("meshery GET %s -> %s: %s", path, resp.Status, detail)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return fmt.Errorf("meshery GET %s: reading the response: %w", path, err)
+	}
+	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' {
+		// A bare null, an array or a scalar all decode into a zero-valued
+		// struct without erroring, which the caller cannot tell from an empty
+		// result. Meshery answers these endpoints with an object.
+		return fmt.Errorf("meshery GET %s -> 200 but the body is not a JSON object; the response shape may have changed", path)
+	}
+	return json.Unmarshal(body, out)
+}
+
+// checkListConsistency rejects a first page that claims rows and carries none.
+//
+// A 200 whose body has the right shape but the wrong key names decodes into a
+// zero-valued list with no error, and the caller cannot tell that from an empty
+// result. Meshery has renamed these payload keys before, which is why
+// GetDesignTopology already refuses a design file it cannot find. Only the first
+// page is checked: a later page legitimately runs past the end.
+func checkListConsistency(path string, page, returned int, total int64) error {
+	if page == 0 && total > 0 && returned == 0 {
+		return fmt.Errorf("meshery GET %s reported %d results but the response carried none; the response shape may have changed", path, total)
+	}
+	return nil
+}
+
+// maxResponseBytes bounds a response read. Meshery's list endpoints page, so a
+// legitimate body is far smaller than this.
+const maxResponseBytes = 32 << 20
+
+// AllPages asks an endpoint for every row instead of one page.
+//
+// Meshery's persisters treat the page size "all" as "apply no limit"
+// (server/handlers/utils.go:101), so it is not a size at all and no arithmetic
+// is done with it. Measured against a live server holding 30 rows: pagesize=all
+// returns all 30 and echoes pageSize as the row count.
+const AllPages = -1
+
+// pageSizeParam renders a page size for the wire.
+func pageSizeParam(pageSize, byDefault int) string {
+	if pageSize == AllPages {
+		return "all"
+	}
+	if pageSize == 0 {
+		pageSize = byDefault
+	}
+	return strconv.Itoa(pageSize)
 }
 
 // Pattern is a Meshery design summary (GET /api/pattern).
@@ -115,7 +196,13 @@ func (c *Client) ListDesigns(ctx context.Context, search string, page, pageSize 
 		q.Set("search", search)
 	}
 	var out PatternsResponse
-	return &out, c.get(ctx, "/api/pattern", q, &out)
+	if err := c.get(ctx, "/api/pattern", q, &out); err != nil {
+		return nil, err
+	}
+	if err := checkListConsistency("/api/pattern", page, len(out.Patterns), int64(out.TotalCount)); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 type k8sMeta struct {
@@ -136,6 +223,15 @@ type MeshSyncResponse struct {
 	PageSize   int           `json:"pageSize"`
 	TotalCount int64         `json:"totalCount"`
 	Resources  []K8sResource `json:"resources"`
+
+	// ExcludedSecrets counts the Secrets removed from Resources, so a filtered
+	// list is distinguishable from one that never held any.
+	ExcludedSecrets int `json:"excludedSecrets"`
+	// TotalCountFiltered reports whether TotalCount counts the same rows
+	// Resources does. It is false for a paged read, where Secrets on pages this
+	// response does not carry cannot be counted and TotalCount is left as the
+	// server's own unfiltered total.
+	TotalCountFiltered bool `json:"totalCountFiltered"`
 }
 
 // ErrSecretKindRefused is returned when a caller asks specifically for Secrets.
@@ -154,7 +250,7 @@ var ErrSecretKindRefused = errors.New("this server does not return Kubernetes Se
 // omits those columns and Secret data / last-applied-config are never
 // serialized; Secrets are excluded outright as a second layer.
 func (c *Client) ListKubernetesResources(ctx context.Context, clusterID, kind, namespace string, page, pageSize int) (*MeshSyncResponse, error) {
-	if kind == "Secret" {
+	if isSecretKind(kind) {
 		return nil, ErrSecretKindRefused
 	}
 	if clusterID == "" {
@@ -179,24 +275,48 @@ func (c *Client) ListKubernetesResources(ctx context.Context, clusterID, kind, n
 	if err := c.get(ctx, "/api/system/meshsync/resources", q, &out); err != nil {
 		return nil, err
 	}
+	if err := checkListConsistency("/api/system/meshsync/resources", page, len(out.Resources), out.TotalCount); err != nil {
+		return nil, err
+	}
 	excludeSecretResources(&out)
 	return &out, nil
 }
 
 // excludeSecretResources drops Secret rows and reduces TotalCount to match, so
 // the count and the list cannot disagree.
+// excludeSecretResources drops Secrets from a resource page.
+//
+// TotalCount is the server's count over every row matching the query, not over
+// the rows in this response. Subtracting the Secrets found on one page from it
+// produces a number that counts neither set: it still includes the Secrets on
+// every page not fetched. So it is only corrected when this response carries
+// the whole result, which is what AllPages asks for; otherwise it is left as
+// the server reported it and TotalCountFiltered says so.
 func excludeSecretResources(out *MeshSyncResponse) {
+	complete := int64(len(out.Resources)) == out.TotalCount
 	filtered := out.Resources[:0]
+	dropped := 0
 	for _, r := range out.Resources {
-		if r.Kind == "Secret" {
-			if out.TotalCount > 0 {
-				out.TotalCount--
-			}
+		if isSecretKind(r.Kind) {
+			dropped++
 			continue
 		}
 		filtered = append(filtered, r)
 	}
 	out.Resources = filtered
+	out.ExcludedSecrets = dropped
+	out.TotalCountFiltered = complete
+	if complete {
+		out.TotalCount = int64(len(filtered))
+	}
+}
+
+// isSecretKind reports whether a kind names Kubernetes Secrets. The comparison
+// is case-insensitive and ignores surrounding space on purpose: a guarantee
+// that turns on exact spelling is not a guarantee, and the caller here is
+// frequently a model rather than a program.
+func isSecretKind(kind string) bool {
+	return strings.EqualFold(strings.TrimSpace(kind), "Secret")
 }
 
 // setClusterIDs writes the JSON-encoded array form that
@@ -230,7 +350,54 @@ func (c *Client) GetMeshSyncSummary(ctx context.Context, clusterIDs ...string) (
 		q.Add("clusterId", id)
 	}
 	var raw json.RawMessage
-	return raw, c.get(ctx, "/api/system/meshsync/resources/summary", q, &raw)
+	if err := c.get(ctx, "/api/system/meshsync/resources/summary", q, &raw); err != nil {
+		return nil, err
+	}
+	return excludeSecretKindCount(raw)
+}
+
+// summaryEnvelope is the summary response. The kinds entries carry no JSON tags
+// on the server side, so they arrive capitalized; measured against a live
+// server: {"kinds":[{"Kind":"Pod","Model":"kubernetes","Count":5}],...}.
+type summaryEnvelope struct {
+	Kinds []struct {
+		Kind  string `json:"Kind"`
+		Model string `json:"Model"`
+		Count int64  `json:"Count"`
+	} `json:"kinds"`
+	Namespaces []string        `json:"namespaces"`
+	Labels     json.RawMessage `json:"labels"`
+}
+
+// excludeSecretKindCount removes the Secret row from a summary.
+//
+// Every other path that returns discovered resources drops Secrets, but the
+// summary is a per-kind census, so passing it through unchanged reports how
+// many Secrets a cluster holds. That is not a name or a payload, and it is a
+// smaller disclosure than the other paths guard against, but it makes the
+// posture inconsistent: one resource says Secrets do not exist while another
+// counts them. It is reported the way the topology paths report theirs.
+func excludeSecretKindCount(raw json.RawMessage) (json.RawMessage, error) {
+	var env summaryEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		// An unreadable summary is not silently forwarded: it could carry the
+		// row this function exists to remove.
+		return nil, fmt.Errorf("meshery GET /api/system/meshsync/resources/summary: the summary did not parse, so the Secret count could not be removed: %w", err)
+	}
+	kept := env.Kinds[:0]
+	excluded := int64(0)
+	for _, k := range env.Kinds {
+		if isSecretKind(k.Kind) {
+			excluded += k.Count
+			continue
+		}
+		kept = append(kept, k)
+	}
+	env.Kinds = kept
+	return json.Marshal(struct {
+		summaryEnvelope
+		ExcludedSecrets int64 `json:"excludedSecrets"`
+	}{env, excluded})
 }
 
 // KubernetesContext ties together the three identifiers Meshery uses for a
@@ -265,7 +432,13 @@ func (c *Client) ListKubernetesContexts(ctx context.Context, page, pageSize int)
 	q.Set("page", strconv.Itoa(page))
 	q.Set("pagesize", strconv.Itoa(pageSize))
 	var out ContextsResponse
-	return &out, c.get(ctx, "/api/system/kubernetes/contexts", q, &out)
+	if err := c.get(ctx, "/api/system/kubernetes/contexts", q, &out); err != nil {
+		return nil, err
+	}
+	if err := checkListConsistency("/api/system/kubernetes/contexts", page, len(out.Contexts), int64(out.TotalCount)); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // Connection is a Meshery connection (subset of GET /api/integrations/connections).
@@ -295,5 +468,11 @@ func (c *Client) ListKubernetesConnections(ctx context.Context, page, pageSize i
 	q.Set("pagesize", strconv.Itoa(pageSize))
 	q.Add("kind", "kubernetes")
 	var out ConnectionsResponse
-	return &out, c.get(ctx, "/api/integrations/connections", q, &out)
+	if err := c.get(ctx, "/api/integrations/connections", q, &out); err != nil {
+		return nil, err
+	}
+	if err := checkListConsistency("/api/integrations/connections", page, len(out.Connections), int64(out.TotalCount)); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

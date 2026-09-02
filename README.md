@@ -24,7 +24,7 @@ Templated resources (RFC 6570), with `resources/subscribe` supported:
 ./demo/run.sh
 ```
 
-Builds the server, starts a mock Meshery serving the real endpoint shapes, and drives the binary through a full MCP session over stdio: handshake, tools, resources, subscriptions and prompts. It paces itself to stay readable, about a minute; `DEMO_PACE=0 ./demo/run.sh` runs it flat out. Every line of [the transcript](docs/DEMO.md) is a genuine JSON-RPC exchange with the process.
+Builds the server, starts a mock Meshery serving the real endpoint shapes, and drives the binary through a full MCP session over stdio: handshake, tools, resources, subscriptions and prompts. It paces itself to stay readable, about 25 seconds; `DEMO_PACE=0 ./demo/run.sh` runs it flat out. Every line of [the transcript](docs/DEMO.md) is a genuine JSON-RPC exchange with the process.
 
 A cluster topology read, straight from that run:
 
@@ -80,7 +80,7 @@ Meshery uses three different identifiers for what a user calls "my cluster", and
 | `connectionId` | the connection record, used by Meshery's own events and connection APIs |
 | `id` (context id) | the deployment target, passed as `?contexts=` when deploying a design |
 
-The cluster-scoped endpoints are also unforgiving about it. `GET /api/system/meshsync/resources` filters with `cluster_id IN (?)` against whatever it is given, so omitting the filter produces an empty `IN` clause and returns nothing at all rather than everything. Its sibling `/resources/summary` requires a cluster too and answers 400 without one, and it spells the parameter differently: a repeated singular `clusterId`, not the JSON-encoded `clusterIds` array the resources endpoint parses.
+The cluster-scoped endpoints are also unforgiving about it. `GET /api/system/meshsync/resources` filters with `cluster_id IN (?)` against whatever it is given, so omitting the filter produces an empty `IN` clause and returns nothing at all rather than everything. Its sibling `/resources/summary` answers 400 without a `clusterId`, and it spells the parameter differently: a repeated singular `clusterId`, not the JSON-encoded `clusterIds` array the resources endpoint parses. That 400 is a presence check on the key alone, measured live: `clusterId=` with an empty value, or `clusterId=all`, both pass it and return 200.
 
 Prompts (guided read-only workflows):
 
@@ -88,7 +88,7 @@ Prompts (guided read-only workflows):
 - **`review_design`**: structured design review weighted toward a chosen concern
 - **`compare_designs`**: diff two designs' component graphs
 
-No mutating endpoints are registered. `spec`/`status`/`labels`/`annotations` are never requested from MeshSync, so Secret data and last-applied-config never reach the model, and Secrets are filtered out of every path that returns resources or components. The topology resources report an `excludedSecrets` count so a filtered graph is distinguishable from one that never contained any.
+No mutating endpoints are registered. `spec`/`status`/`labels`/`annotations` are never requested from MeshSync, which keeps last-applied-config and the object spec off the wire. That alone does not cover Secrets: `data` and `stringData` are columns on the resource row itself and arrive whether or not those parameters are sent, measured against a live server. What keeps them from the model is that Secrets are dropped by kind on every path that returns resources or components, and the row shape decoded here carries no payload fields at all. The topology resources report an `excludedSecrets` count so a filtered graph is distinguishable from one that never contained any.
 
 ## Build
 
@@ -96,7 +96,7 @@ No mutating endpoints are registered. `spec`/`status`/`labels`/`annotations` are
 go build -o meshery-mcp-poc .
 ```
 
-Requires Go 1.25+. Depends on `github.com/modelcontextprotocol/go-sdk` v1.7.0 and `github.com/yosida95/uritemplate/v3`, which the SDK also uses and which the resource handlers need to match URI templates.
+Requires Go 1.25+. Depends on `github.com/modelcontextprotocol/go-sdk` v1.7.0, `github.com/yosida95/uritemplate/v3` for matching resource URI templates, and `sigs.k8s.io/yaml` for the design files a real Meshery serves as YAML.
 
 ## Transports
 
@@ -159,20 +159,52 @@ npx @modelcontextprotocol/inspector ./meshery-mcp-poc
 go test ./... -race
 ```
 
-33 tests, 73.6% coverage on the server package and 80.7% on the Meshery client. Every guarantee below has a test that fails if it stops holding, verified red-green rather than assumed:
+136 tests (184 including subtests) in the hermetic suite, plus 5 integration tests behind the `integration` build tag. Coverage: 78.2% on the server package, 83.5% on the Meshery client, 92.6% on `mesherytest`, 86.3% on `mcpera`, 86.9% on `dualera`. The hermetic suite runs in about 12 seconds. Every guarantee below has a test that fails if it stops holding, verified red-green rather than assumed:
 
 | Guarantee | What breaks without it |
 |---|---|
 | Secrets excluded on every path | a Secret name reaches the model |
 | `kind: "Secret"` refused | the filter is dropped and every other kind is returned as the answer |
 | Empty template variables rejected | `meshery://clusters//topology` returns every cluster as one |
-| `clusterIds` sent as a JSON array | the handler matches zero rows and the cluster looks empty |
+| `clusterIds` sent as a JSON array | absent, the handler matches zero rows and the cluster looks empty; malformed, a 400 |
 | `evaluated` derived, never hardcoded | a failed evaluation reads as a graph with no edges |
 | Design file spellings and shapes | a current Meshery returns an empty design with no error |
 
 Unit tests cover request paths, cookie auth, response parsing, and Secret exclusion on every path that returns resources or components, including both topology paths (`meshery/client_test.go`, `meshery/topology_test.go`). They also assert positive controls on the query itself, so a dropped `namespace`, `clusterIds` or `asDesign` parameter fails the build rather than passing silently, and that `spec`/`status`/`labels`/`annotations` are never requested.
 
-End-to-end tests (`server_test.go`, `resources_test.go`, `prompts_test.go`) wire the MCP server to a client over the SDK's in-memory transport and drive it against a mock Meshery, covering the tools, the templated resources, subscriptions and the prompts.
+End-to-end tests (`server_test.go`, `resources_test.go`, `prompts_test.go`) wire the MCP server to a client over the SDK's in-memory transport and drive it against a mock Meshery, covering the tools, the templated resources, subscriptions and the prompts. `fake_e2e_test.go` runs the same surface against [`mesherytest`](mesherytest/) instead, and then asserts on what reached Meshery.
+
+## mesherytest
+
+[`mesherytest`](mesherytest/) is a fake Meshery Server for testing Meshery clients, written to be lifted out of this repository. It reproduces the real API's behaviour on the endpoints an MCP server reads, including the several that answer a wrong request with `200 OK` and nothing in it, and lets a test assert on the request the client sent rather than only on the response it got back.
+
+```go
+fake := mesherytest.New(t)
+client := myclient.New(fake.URL(), fake.Token, fake.Provider)
+// ... drive the client ...
+fake.AssertAuthenticated(t)
+fake.AssertClusterScoped(t, "/api/system/meshsync/resources", fake.Data().ClusterID())
+fake.AssertZeroBasedPaging(t, "/api/pattern")
+```
+
+A hand-written mock returns the shape the code under test expects, so it agrees with the code even where the code is wrong about Meshery. `./mesherytest/mutation_check.sh` measures the difference: it breaks this repository's Meshery client four ways and reports which suites notice.
+
+| Mutation applied to the client | Hand-written MCP mock | Client tests | `mesherytest` |
+|---|---|---|---|
+| cluster filter dropped from the query | passes | catches | catches |
+| pages requested one-based | passes | **passes** | catches |
+| page size spelled `pageSize` not `pagesize` | passes | **passes** | catches |
+| bearer header instead of the cookies | passes | catches | catches |
+
+The two middle rows are the ones that matter. Meshery's pagination is zero-based on both of its offset paths, so a client that opens at page 1 skips the first page of every list it reads. And the page-size parameter is spelled differently per endpoint: of the six endpoints measured, three read only the lowercase `pagesize` and ignore `pageSize` without saying so, and the defaults differ too. Nothing in a suite written without prior knowledge of either catches them. The other two rows are caught by a client test only because a positive control for that exact query was hand-written after the bug had already been found the hard way. The package turns each of those controls into one line, so the next author does not have to know the trap first.
+
+## mcpera and dualera
+
+Two packages that came out of this work but are not Meshery-specific, both stdlib-only:
+
+[`mcpera`](mcpera/) reports which MCP protocol era a server actually serves. Revision `2026-07-28` removed the `initialize` handshake, and a legacy server given a modern request can execute it and answer in the legacy shape, with no error and nothing on the wire saying the eras did not match. Measured: `mcp-go` v0.57.0 and v0.58.0 do exactly that; `mcp-go` v1.0.0-beta.1 and `go-sdk` v1.7.0 are dual-era. The command exits non-zero on a silent downgrade so it can gate CI. This server, being on `go-sdk` v1.7.0, measures as dual-era.
+
+[`dualera`](dualera/) is the migration path for servers that cannot upgrade: a stdio bridge that makes a legacy MCP server answer modern clients too. The same unmodified `mcp-go` v0.57.0 binary goes from `era: legacy` with a silent downgrade to `era: dual-era`, measured by `mcpera`, which knows nothing about the bridge.
 
 ## Topology
 
@@ -180,7 +212,7 @@ The cluster topology resource is built on `GET /api/system/meshsync/resources?as
 
 Three things that shape the implementation, all from `server/handlers/meshsync_handler.go`:
 
-- `asDesign` is undocumented and absent from Meshery's `openapi.yml`, so it is treated here as an internal API that can move.
+- `asDesign` is documented in Meshery's published v0.9 REST API reference, where it reads "asDesign is a boolean value. If true then the response is returned as a design and resources are omitted", but it is absent from `docs/data/openapi.yml`, the repository's only machine-readable spec. It is treated here as stable enough to build on and worth pinning with a test.
 - When it is set, the server clears the flat `resources` list. You get the graph or the list, never both in one call.
 - Evaluation runs at depth 1 with no timeout guard, and on failure the server falls back to the un-evaluated design and still returns 200. An empty `relationships` array therefore means "no edges were derived or evaluation failed", never a confirmed empty graph, which is why the resource reports an explicit `evaluated` field rather than presenting empty edges as healthy.
 
@@ -192,9 +224,26 @@ This is a deliberately small vertical slice of the funded project: the Go REST c
 
 ## What this has and has not been tested against
 
-Verified: the MCP protocol surface, against the compiled binary over stdio with a real client; every Meshery request shape, against the handlers in `meshery/meshery` at current master; the security guarantees, red-green.
+Verified: the MCP protocol surface, against the compiled binary over stdio with a real client; the security guarantees, red-green; and **the Meshery request and response shapes against a live Meshery Server**.
 
-Not verified: behaviour against a live Meshery Server with a real cluster attached. The demo uses a mock serving the real payload shapes. Meshery ships an amd64-only image that crashes under emulation on arm64 during content seeding, so a live run has not been possible here. Worth stating plainly rather than implying more coverage than exists.
+The live run is new. Meshery publishes an amd64-only image that crashes under emulation on arm64 during content seeding, which is why this went untested for so long. Building the server from source instead works: Meshery's `go.mod` targets Go 1.26.4 and the tree compiles and runs natively on arm64.
+
+```bash
+cd meshery/server/cmd && go build -o meshery-server .
+PORT=9081 PROVIDER=Local KEYS_PATH=../../server/permissions/keys.csv ./meshery-server
+```
+
+That server seeds itself with 355 designs and 292 models, which is enough to exercise pagination and the design endpoints for real. What the live run confirmed, and what it corrected, is in [the contract notes](mesherytest/README.md).
+
+There are integration tests for this now, behind a build tag so `go test ./...` stays hermetic:
+
+```bash
+make test-integration          # needs a Meshery running; see docs/INTEGRATION.md
+```
+
+They build the binary, drive it over stdio as a real MCP client would, and read real designs through the whole path. The design-topology one is the case a fake cannot reach: the list endpoint and the by-ID endpoint serve `patternFile` in different encodings, so a client handling only one passes every mock and fails here.
+
+Still not verified: behaviour with a real Kubernetes cluster attached. MeshSync needs an operator in-cluster, so the cluster-scoped resource endpoints were exercised against their guards and their empty shapes, not against discovered workloads.
 
 ## License
 

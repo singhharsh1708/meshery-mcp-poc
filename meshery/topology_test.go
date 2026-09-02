@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// TestGetClusterTopologyExcludesSecrets is the regression test for the gap that
-// let Secret components through the asDesign path while the flat resource list
-// filtered them.
+// TestGetClusterTopologyExcludesSecrets pins that the asDesign path filters
+// Secret components, the same as the flat resource list does. The two paths
+// return components and rows separately, so each needs its own guard.
 func TestGetClusterTopologyExcludesSecrets(t *testing.T) {
 	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"totalCount":3,"design":{"name":"cluster","schemaVersion":"v1beta1",

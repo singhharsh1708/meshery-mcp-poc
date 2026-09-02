@@ -2,7 +2,9 @@ package meshery
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"os"
 	"testing"
 )
 
@@ -47,15 +49,13 @@ func TestGetDesignTopologyAcceptsPatternFileSpellings(t *testing.T) {
 	}
 }
 
-// TestGetDesignTopologyErrorsRatherThanReturningEmpty is the regression test for
-// the silent-empty failure: a design file that is missing or unparsable must be
-// an error, never a graph with no components.
+// TestGetDesignTopologyErrorsRatherThanReturningEmpty pins that a design file
+// which is missing or unparsable is an error, never a graph with no components.
 func TestGetDesignTopologyErrorsRatherThanReturningEmpty(t *testing.T) {
 	cases := map[string]string{
 		"no design file at all": `{"id":"d1","name":"outer"}`,
 		"unknown spelling":      `{"id":"d1","name":"outer","some_other_field":{"components":[]}}`,
-		"yaml inside string":    `{"id":"d1","patternFile":"name: my-design\ncomponents: []\n"}`,
-		"unparsable string":     `{"id":"d1","patternFile":"not json at all"}`,
+		"unparsable string":     `{"id":"d1","patternFile":"\tnot: [valid, yaml"}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -87,5 +87,45 @@ func TestGetDesignTopologyEvaluatedReflectsRelationships(t *testing.T) {
 	}
 	if topo.Evaluated {
 		t.Error("Evaluated must be false when the design carries no relationships")
+	}
+}
+
+// TestGetDesignTopologyParsesRealMesheryYAML uses a design captured verbatim
+// from a running Meshery Server. Every design a live server returns is YAML
+// inside the patternFile string, not JSON, so a JSON-only decoder fails on all
+// of them while passing against any mock that serves JSON.
+func TestGetDesignTopologyParsesRealMesheryYAML(t *testing.T) {
+	design, err := os.ReadFile("testdata/real_design.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]string{
+		"id":          "d1",
+		"name":        "prometheus-postgres-exporter",
+		"patternFile": string(design),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c, srv := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	topo, err := c.GetDesignTopology(context.Background(), "d1")
+	if err != nil {
+		t.Fatalf("a design from a real Meshery did not parse: %v", err)
+	}
+	if len(topo.Components) == 0 {
+		t.Fatal("no components parsed out of a real design")
+	}
+	if topo.Name != "prometheus-postgres-exporter" {
+		t.Errorf("name = %q", topo.Name)
+	}
+	for _, c := range topo.Components {
+		if c.DisplayName == "" {
+			t.Errorf("component %s parsed with no display name", c.ID)
+		}
 	}
 }

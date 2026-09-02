@@ -120,14 +120,16 @@ flowchart TB
 
 Topology is a resource rather than a tool on purpose. An agent should be able to
 attach cluster state as context without that counting as an action. Every tool
-carries `ReadOnlyHint` so a client can auto-approve it, which is worth setting
-explicitly because mcp-go's `NewTool` otherwise defaults tools to
+carries `ReadOnlyHint` so a client can auto-approve it, set explicitly. This
+repo is on the official go-sdk, but the ecosystem trap is worth knowing:
+mcp-go's `NewTool` defaults tools to
 `destructiveHint: true`.
 
 ## Where the topology graph comes from
 
-There is no topology endpoint. What there is, is an undocumented `asDesign=true`
-parameter on the MeshSync resources route, which makes Meshery render whatever it
+There is no topology endpoint. What there is, is an `asDesign=true` parameter
+on the MeshSync resources route, documented in the published v0.9 REST reference
+but absent from `openapi.yml`, which makes Meshery render whatever it
 has discovered as a design and run it through the relationship evaluator. The
 resulting `PatternFile` has `components` for nodes and `relationships` for edges,
 which is exactly a graph.
@@ -152,9 +154,12 @@ client method on the assumption it can move.
 
 Four separate things, because one of them was not enough.
 
-`spec`, `status`, `labels` and `annotations` are never requested, so Secret
-payloads are not serialized server-side to begin with. Secret objects are then
-filtered out of every path that returns resources or components, and that
+`spec`, `status`, `labels` and `annotations` are never requested, which keeps
+the object spec and last-applied-config off the wire. Secret payloads are a
+separate matter: `data` and `stringData` are columns on the resource row and
+come back whether or not those parameters are sent, measured against a live
+server. Secret objects are therefore filtered out of every path that returns
+resources or components, and that
 includes both topology graphs, which is where an earlier version leaked them: the
 flat list filtered correctly while the graph did not. The topology resources
 report `excludedSecrets` so a filtered graph is distinguishable from one that
@@ -189,10 +194,12 @@ Meshery has several endpoints where the honest answer and the empty answer look
 identical. The server distinguishes them rather than forwarding the ambiguity:
 
 - Relationship evaluation failing while still returning 200, covered above.
-- The design file arriving as a JSON string under `patternFile` on current
-  releases and `pattern_file` on older ones. Decoding one spelling gives you a
-  design with no components and no error. All four spellings and both shapes are
-  accepted, and a missing design file is an error.
+- The design file arriving under `patternFile` on current releases and
+  `pattern_file` on older ones, as YAML from the list endpoint and JSON from the
+  by-ID endpoint, measured six for six against a live server. Decoding one
+  spelling or one encoding gives you a design with no components and no error.
+  All four spellings, both encodings and both shapes are accepted, and a missing
+  design file is an error.
 - `cluster_id IN (?)` with an empty list, which matches nothing. The cluster id
   is required rather than optional so this fails in the client.
 - Unauthenticated calls being redirected to a login page rather than answering
@@ -209,8 +216,10 @@ The protocol surface is exercised against the compiled binary over stdio, and
 every Meshery request shape is checked against the handlers in `meshery/meshery`
 at master. The security guarantees have red-green tests.
 
-What has not happened is a run against a live Meshery with a real cluster
-attached. `demo/` uses a mock that serves the real payload shapes, including the
-awkward ones. Meshery ships an amd64-only image that crashes during content
-seeding under emulation on arm64, so a live run has not been possible on this
-machine. Worth knowing before quoting any of this as proven end to end.
+A live run has since happened: Meshery built from source runs natively on
+arm64 (the published image is amd64 only and crashes under emulation during
+content seeding), self-seeds roughly 355 designs, and the request and response
+shapes were verified against it; see the README and docs/INTEGRATION.md. What
+has still not happened is a run with a real Kubernetes cluster attached, so the
+cluster-scoped endpoints are verified against their guards and empty shapes, not
+against discovered workloads.

@@ -103,7 +103,7 @@ is why the contexts tool is the entry point for everything cluster-scoped.
 string under `patternFile` on current releases and `pattern_file` on older ones.
 Decoding one spelling yields an empty design with no error.
 
-**Topology comes from an undocumented parameter.** There is no `/topology` route.
+**Topology comes from a parameter outside the machine-readable spec.** There is no `/topology` route.
 `?asDesign=true` makes Meshery render discovered state as an evaluated design
 whose components are nodes and relationships are edges. It clears the flat
 resource list, evaluates at depth 1, has no timeout guard, and on evaluation
@@ -113,7 +113,7 @@ relationships is ambiguous and must be reported as such.
 **Org scoping.** Environment and workspace routes reject any request without
 `orgId`. An org comes from `GET /api/identity/orgs`.
 
-**Registry is unauthenticated.** Every `/api/registry/*` route is `NoAuth`, which
+**Registry reads are unauthenticated.** Every GET under `/api/registry` is `NoAuth` (the writes are not), which
 makes it the one surface testable without a login, and a good first tool target.
 
 ## 5. Phases
@@ -146,12 +146,12 @@ permissive. Three rules:
    `clusterIds`, `namespace` or `orgId` must fail the build.
 2. Prove each guard red-green: remove the guard, watch the test fail, restore it.
 3. Drive the real binary over a real transport at least once, so protocol
-   regressions surface. `demo/run.sh` in this repo does that in about ten seconds.
+   regressions surface. `demo/run.sh` in this repo does that in about 25 seconds, or a few seconds with `DEMO_PACE=0`.
 
 ## 7. Risks
 
 **The protocol revision.** The current MCP specification is `2026-07-28`, which
-removes the `initialize` handshake, makes `server/discover` mandatory and replaces
+removes the `initialize` handshake, adds `server/discover` (optional per the spec) and replaces
 `resources/subscribe` with `subscriptions/listen`. Those are exactly the parts a
 registration contract abstracts, so the SDK choice should be deliberate before the
 contract lands. Raised as meshery-extensions/meshery-mcp-server#42.
@@ -170,7 +170,7 @@ can move.
 ## 8. Reference implementation
 
 The proof of concept in this repository implements phases 1 to 3 in miniature:
-four read-only tools, four resources including three URI templates with
+four read-only tools, four resources, each of them a URI template, with
 subscriptions, three prompts, both transports, CI, and tests for every guarantee
 listed above. It exists to make the constraints in section 4 concrete rather than
 theoretical, and its limitations are stated in the README.

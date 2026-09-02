@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
+
+	"sigs.k8s.io/yaml"
 )
 
 // TopologyComponent is a node in a topology graph: one component of the design
@@ -70,6 +73,11 @@ type Topology struct {
 // when it is set, evaluates relationships at depth 1, and has no timeout guard
 // on that path.
 func (c *Client) GetClusterTopology(ctx context.Context, clusterID string) (*Topology, error) {
+	// Without a cluster filter Meshery answers 200 with nothing, which reads as
+	// an empty cluster rather than as the missing argument it is.
+	if clusterID == "" {
+		return nil, errors.New("cluster id is required; list the Kubernetes contexts first to obtain one")
+	}
 	q := url.Values{}
 	q.Set("asDesign", "true")
 	q.Set("page", "0")
@@ -84,6 +92,13 @@ func (c *Client) GetClusterTopology(ctx context.Context, clusterID string) (*Top
 	}
 	var out topologyEnvelope
 	if err := c.get(ctx, "/api/system/meshsync/resources", q, &out); err != nil {
+		return nil, err
+	}
+	// The same guard the flat list has. This path asks for every row, so a
+	// cluster the server counted rows for must produce components; a renamed
+	// design or components key would otherwise decode into an empty graph and
+	// read as a cluster holding nothing.
+	if err := checkListConsistency("/api/system/meshsync/resources?asDesign", 0, len(out.Design.Components), out.TotalCount); err != nil {
 		return nil, err
 	}
 	kept, dropped := excludeSecrets(out.Design.Components)
@@ -108,7 +123,7 @@ func (c *Client) GetClusterTopology(ctx context.Context, clusterID string) (*Top
 func excludeSecrets(in []TopologyComponent) (kept []TopologyComponent, dropped int) {
 	kept = make([]TopologyComponent, 0, len(in))
 	for _, c := range in {
-		if c.Component.Kind == "Secret" {
+		if isSecretKind(c.Component.Kind) {
 			dropped++
 			continue
 		}
@@ -190,9 +205,13 @@ func decodeDesignFile(raw json.RawMessage) (*patternFile, error) {
 			return nil, fmt.Errorf("design file string was empty")
 		}
 		if trimmed[0] != '{' {
-			// Historically these were YAML. Say so rather than returning an
-			// empty graph that reads as a design with no components.
-			return nil, fmt.Errorf("design file is not JSON; this build cannot parse it")
+			// Meshery serves the design file as YAML, not JSON. Every design a
+			// live server returns takes this path.
+			var pf patternFile
+			if err := yaml.Unmarshal(trimmed, &pf); err != nil {
+				return nil, fmt.Errorf("design file could not be parsed as YAML: %w", err)
+			}
+			return &pf, nil
 		}
 	}
 	var pf patternFile
@@ -206,12 +225,13 @@ func decodeDesignFile(raw json.RawMessage) (*patternFile, error) {
 // cluster. Secrets are excluded and spec/status/labels/annotations are never
 // requested, matching ListKubernetesResources.
 func (c *Client) ListWorkloads(ctx context.Context, clusterID, namespace string, page, pageSize int) (*MeshSyncResponse, error) {
-	if pageSize == 0 {
-		pageSize = 25
+	// Same reason as GetClusterTopology: an absent filter is 200 with nothing.
+	if clusterID == "" {
+		return nil, errors.New("cluster id is required; list the Kubernetes contexts first to obtain one")
 	}
 	q := url.Values{}
 	q.Set("page", strconv.Itoa(page))
-	q.Set("pagesize", strconv.Itoa(pageSize))
+	q.Set("pagesize", pageSizeParam(pageSize, 25))
 	if namespace != "" {
 		q.Add("namespace", namespace)
 	}
@@ -226,12 +246,12 @@ func (c *Client) ListWorkloads(ctx context.Context, clusterID, namespace string,
 	if err := c.get(ctx, "/api/system/meshsync/resources", q, &out); err != nil {
 		return nil, err
 	}
-	filtered := out.Resources[:0]
-	for _, r := range out.Resources {
-		if r.Kind != "Secret" {
-			filtered = append(filtered, r)
-		}
+	// Every sibling list method checks this. Without it a renamed resources key
+	// decodes into an empty slice beside a non-zero count, which reads as an
+	// empty namespace rather than as the shape change it is.
+	if err := checkListConsistency("/api/system/meshsync/resources", page, len(out.Resources), out.TotalCount); err != nil {
+		return nil, err
 	}
-	out.Resources = filtered
+	excludeSecretResources(&out)
 	return &out, nil
 }

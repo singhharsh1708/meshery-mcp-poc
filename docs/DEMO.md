@@ -7,8 +7,8 @@ stdio. Nothing is simulated or hand-written. Reproduce it yourself:
 ./demo/run.sh
 ```
 
-It paces itself so the session is readable while it runs, about a minute end to
-end. `DEMO_PACE=0 ./demo/run.sh` runs it flat out in a couple of seconds.
+It paces itself so the session is readable while it runs, about 25 seconds end
+to end. `DEMO_PACE=0 ./demo/run.sh` runs it flat out in a couple of seconds.
 
 That builds the server, starts a mock Meshery on `127.0.0.1:9099` serving the
 real endpoint shapes, and drives the binary through a full MCP session.
@@ -19,7 +19,7 @@ The mock serves the exact payload shapes Meshery returns, including the awkward
 ones: the design file arrives as a JSON *string* under `patternFile`, the
 summary endpoint answers 400 without a cluster, and the resources endpoint
 returns a Secret that the server has to strip. Using it means the demo runs
-anywhere in about ten seconds.
+anywhere in about 25 seconds, or a few seconds with `DEMO_PACE=0`.
 
 What this demo proves: the MCP protocol surface is real and complete, the
 Meshery request shapes are correct, and the security posture holds. What it does
@@ -49,7 +49,8 @@ wrong data rather than an error when you get it wrong:
 - `clusterIds` is URL-encoded `["ksid-9c2e"]`, a JSON array in a single
   parameter. Omitting it makes the handler build an empty `IN` clause, which
   matches zero rows and reads as an empty cluster.
-- The topology call sets `asDesign=true`, an undocumented parameter that makes
+- The topology call sets `asDesign=true`, a parameter documented in the v0.9
+  REST reference but absent from `openapi.yml`, which makes
   Meshery render discovered state as a design so it has components and
   relationships rather than a flat list.
 

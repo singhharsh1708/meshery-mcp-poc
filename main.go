@@ -98,9 +98,15 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "listen address for the http (streamable) transport")
 	flag.Parse()
 
+	// A missing or unreadable credential file is not a reason to exit. An MCP
+	// client that launches this over stdio would see the process die with no
+	// JSON-RPC at all, which it reports as a broken server rather than as the
+	// configuration problem it is. Starting anyway means the client completes a
+	// handshake, sees the tools, and gets the real reason on the first call.
 	c, err := meshery.NewFromEnv()
 	if err != nil {
-		log.Fatalf("meshery client: %v", err)
+		log.Printf("meshery client unavailable, tools will report this on call: %v", err)
+		c = meshery.Unconfigured(err)
 	}
 
 	switch *transport {
@@ -134,6 +140,9 @@ func newServer(c *meshery.Client) *mcp.Server {
 	subs := newSubscriptions()
 	s := mcp.NewServer(&mcp.Implementation{Name: "meshery-mcp-poc", Version: "0.1.0"}, &mcp.ServerOptions{
 		SubscribeHandler: func(_ context.Context, req *mcp.SubscribeRequest) error {
+			if !servableURI(req.Params.URI) {
+				return mcp.ResourceNotFoundError(req.Params.URI)
+			}
 			subs.add(req.Params.URI)
 			return nil
 		},
